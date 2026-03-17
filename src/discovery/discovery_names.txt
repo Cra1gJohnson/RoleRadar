@@ -1,0 +1,200 @@
+Apple
+Microsoft
+Nvidia
+Amazon
+Alphabet
+Meta
+Broadcom
+Oracle
+Salesforce
+Cisco
+Adobe
+IBM
+AMD
+Qualcomm
+Intuit
+Palantir
+ServiceNow
+Uber
+Airbnb
+Snowflake
+CrowdStrike
+Palo Alto
+Datadog
+Workday
+Fortinet
+Block
+Autodesk
+Fiserv
+Analog Devices
+Micron
+Synopsys
+Cadence
+Marvell
+KLA
+ON Semiconductor
+Lam Research
+Applied Materials
+Texas Instruments
+Corning
+Motorola Solutions
+HP Enterprise
+Hewlett Packard
+Dell Technologies
+NetApp
+Akamai
+Zoom
+MongoDB
+Atlassian
+DocuSign
+eBay
+Software
+Information Technology
+Cloud Computing
+Cybersecurity
+Data Science
+Machine Learning
+Artificial Intelligence
+DevOps
+SaaS
+PaaS
+IaaS
+IT Services
+Managed Services
+Network Security
+Enterprise Software
+IT Consulting
+Data Analytics
+Business Intelligence
+Digital Transformation
+Blockchain
+Semiconductors
+Telecommunications
+Network Infrastructure
+Database Management
+Web Development
+Mobile Development
+Automation
+Systems Integration
+Platform Engineering
+Site Reliability
+Quality Assurance
+Product Management
+IT Operations
+Help Desk
+Technical Support
+Identity Management
+Risk Management
+Compliance
+Ecommerce
+Fintech
+Healthtech
+Edtech
+Govtech
+Adtech
+Martech
+Robotics
+Internet Services
+Data Engineering
+Research Development
+Technology Strategy
+Python
+Java
+JavaScript
+TypeScript
+SQL
+NoSQL
+Git
+Docker
+Kubernetes
+Linux
+Bash
+REST APIs
+GraphQL
+Django
+Flask
+FastAPI
+React
+Node.js
+Spring Boot
+C Sharp
+C PlusPlus
+Go
+Rust
+Terraform
+Ansible
+Jenkins
+GitHub Actions
+CI CD
+Unit Testing
+Integration Testing
+System Design
+Data Structures
+Algorithms
+Object Oriented
+Functional Programming
+Microservices
+Distributed Systems
+Cloud Architecture
+AWS
+Azure
+GCP
+ETL
+Data Modeling
+Debugging
+Code Review
+API Design
+Version Control
+Security Testing
+Performance Tuning
+Communication
+Teamwork
+Problem Solving
+Critical Thinking
+Adaptability
+Collaboration
+Leadership
+Time Management
+Conflict Resolution
+Creativity
+Empathy
+Active Listening
+Decision Making
+Negotiation
+Presentation Skills
+Public Speaking
+Stakeholder Management
+Mentoring
+Coaching
+Accountability
+Reliability
+Initiative
+Resilience
+Patience
+Organization
+Prioritization
+Planning
+Self Management
+Emotional Intelligence
+Attention Detail
+Customer Focus
+Strategic Thinking
+Analytical Thinking
+Influencing
+Facilitation
+Cross Functional
+Relationship Building
+Feedback
+Decision Ownership
+Learning Agility
+Growth Mindset
+Professionalism
+Work Ethic
+Dependability
+Problem Framing
+Documentation
+Meeting Management
+Consensus Building
+Change Management
+Conflict Management
+Service Orientation
