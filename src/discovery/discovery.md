@@ -8,13 +8,16 @@
 ## Directory Scope
 - `discovery_names.txt`: source list of discovery search terms.
 - `discovery.md`: operating notes, assumptions, and future prompt context.
+- `query_names.py`: ddgr-based discovery runner for Greenhouse queries.
+- `you_query.py`: You.com Search API-based discovery runner for Greenhouse queries.
 
 ## High-Level Workflow
 1. Load discovery terms from `discovery_names.txt`.
 2. Persist terms in PostgreSQL (`discovery_name`) with query timestamps.
 3. Run search discovery for Greenhouse and Lever targets.
-4. Extract normalized identifiers (`board_token`, `site_slug`).
-5. Save extracted identifiers into PostgreSQL for downstream API usage.
+4. Record sent You.com queries in PostgreSQL (`you_query`) so they are not resent.
+5. Extract normalized identifiers (`board_token`, `site_slug`).
+6. Save extracted identifiers into PostgreSQL for downstream API usage.
 
 ## Search Targets
 - Greenhouse:
@@ -46,6 +49,15 @@
     - `token` (unique)
     - `last_used` (timestamp)
     - `success` (boolean)
+- `you_query`
+  - Stores each You.com search query exactly once.
+  - Current columns:
+    - `query_id` (primary key)
+    - `query` (unique)
+    - `results_num` (count of search result URLs returned)
+    - `last_used` (timestamp)
+    - `success` (boolean query success flag)
+    - `tokens` (count of valid Greenhouse board tokens found for the query)
 - `site_slug`
   - Stores unique Lever site slugs.
   - Includes source URL and timestamps.
@@ -64,6 +76,9 @@
 - Board token table:
   - Table name: `board_token`
   - Key columns: `token_id`, `token`, `last_used`, `success`
+- You query table:
+  - Table name: `you_query`
+  - Key columns: `query_id`, `query`, `results_num`, `last_used`, `success`, `tokens`
 - Site slug table:
   - Table name:
   - Key columns:
@@ -116,6 +131,33 @@
   - Streams query progress to stdout, including page fetch events, URL counts, extracted tokens, validation status, and errors.
 - Compatibility note:
   - `--cookie-file` and `--reset-cookies` are retained for CLI compatibility but are currently no-op in subprocess ddgr mode.
+
+
+
+
+## you_query.py Behavior
+- Uses the You.com Search API endpoint `GET https://ydc-index.io/v1/search`.
+- Reads the API key from `.env` variable `API`.
+- Uses the same Greenhouse query templates as `query_names.py`:
+  - `site:boards.greenhouse.io {name}`
+  - `site:job-boards.greenhouse.io {name}`
+- Requests the maximum supported result count for each query (`count=100`).
+- Processes only Greenhouse result URLs and extracts `{board_token}` from:
+  - `https://boards.greenhouse.io/{board_token}/...`
+  - `https://job-boards.greenhouse.io/{board_token}/...`
+- Treats `you_query` as a sent-query ledger:
+  - If `query` already exists in `you_query`, skip the request.
+  - If `query` does not exist, send it once and insert a row into `you_query`.
+- Stores the following per-query data in `you_query`:
+  - `results_num`: number of returned result URLs considered from the API response
+  - `success`: `true` when the request and parse/validation flow completes, `false` on request/parsing failure
+  - `tokens`: count of valid Greenhouse board tokens found for the query, including already-known tokens
+- Validates each extracted token with:
+  - `GET https://boards-api.greenhouse.io/v1/boards/{board_token}`
+  - A successful JSON response marks the token as valid.
+- Persists valid tokens into `board_token` only if the token is not already present.
+- Enforces a hard cap of 100 You.com search requests per rolling 60-second window.
+- Prints concise stdout progress lines for skips, successful queries, counts, inserts, and failures.
 
 ## Open Questions
 - Should search providers be limited to Google only?
