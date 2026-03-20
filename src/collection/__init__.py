@@ -1,2 +1,0 @@
-"""Job ingestion package."""
-
