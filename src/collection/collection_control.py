@@ -1,18 +1,27 @@
 import argparse
+import sys
 import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import psycopg
 
 from board_hash import BoardProcessResult, db_connect, process_board_token
 
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.append(str(SRC_ROOT))
+
+from env_loader import load_shared_env
+
+load_shared_env()
 
 DEFAULT_RATE_PER_MINUTE = 120
-DEFAULT_MAX_WORKERS = 10
+DEFAULT_MAX_WORKERS = 8
 DEFAULT_FAILURE_THRESHOLD = 0
 PROGRESS_PRINT_INTERVAL = 25
 
@@ -64,15 +73,37 @@ class RollingRateLimiter:
             self.timestamps.popleft()
 
 
+class EvenRateLimiter:
+    """Spread task starts evenly across time instead of bursting within a minute."""
+
+    def __init__(self, rate_per_minute: int) -> None:
+        """Initialize the limiter with a fixed interval between dispatches."""
+        self.dispatch_interval = 60.0 / rate_per_minute
+        self.next_dispatch_at = time.monotonic()
+        self.lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """Wait until the next evenly spaced dispatch slot is available."""
+        with self.lock:
+            now = time.monotonic()
+            sleep_seconds = self.next_dispatch_at - now
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+                now = time.monotonic()
+
+            # If we fell behind, resume from now instead of bursting to catch up.
+            self.next_dispatch_at = max(self.next_dispatch_at + self.dispatch_interval, now)
+
+
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for full and test collection-control modes."""
+    """Parse CLI arguments for controller modes."""
     parser = argparse.ArgumentParser(
         description="Top-level controller for Greenhouse board collection."
     )
     parser.add_argument(
         "mode",
-        choices=("full", "test"),
-        help="Run a full-table backfill or a one-board test run",
+        choices=("full", "new", "test"),
+        help="Run a full scan, unseen-only scan, or a one-board test run",
     )
     parser.add_argument(
         "--rate-per-minute",
@@ -130,6 +161,28 @@ def fetch_random_valid_token(conn: psycopg.Connection) -> Optional[str]:
     if row is None:
         return None
     return row[0]
+
+
+def fetch_unseen_valid_tokens(conn: psycopg.Connection) -> list[str]:
+    """Load successful board tokens that do not yet have a snapshot row."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT bt.token
+            FROM board_token AS bt
+            WHERE bt.token IS NOT NULL
+              AND bt.success = TRUE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM greenhouse_board_snapshot AS gbs
+                  WHERE gbs.token = bt.token
+              )
+            ORDER BY bt.token_id, bt.token
+            """
+        )
+        rows = cur.fetchall()
+
+    return [row[0] for row in rows]
 
 
 def run_single_token(token: str, verbose: bool) -> BoardProcessResult:
@@ -287,6 +340,81 @@ def run_full_scan(
     return 0
 
 
+def run_unseen_scan(
+    rate_per_minute: int,
+    max_workers: int,
+    failure_threshold: int,
+) -> int:
+    """Run a smoothly paced scan across tokens with no snapshot row yet."""
+    with db_connect() as conn:
+        tokens = fetch_unseen_valid_tokens(conn)
+
+    if not tokens:
+        print("No unseen successful board_token rows found in database")
+        return 0
+
+    print(
+        f"Mode=new tokens={len(tokens)} rate_per_minute={rate_per_minute} "
+        f"max_workers={max_workers} "
+        f"failure_threshold={'disabled' if failure_threshold == 0 else failure_threshold}"
+    )
+
+    rate_limiter = EvenRateLimiter(rate_per_minute=rate_per_minute)
+    summary = RunSummary()
+    stop_scheduling = False
+    next_token_index = 0
+    futures: dict[Future[BoardProcessResult], str] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while next_token_index < len(tokens) or futures:
+            while (
+                not stop_scheduling
+                and next_token_index < len(tokens)
+                and len(futures) < max_workers
+            ):
+                if failure_threshold > 0 and summary.failed >= failure_threshold:
+                    stop_scheduling = True
+                    print(
+                        f"Failure threshold reached ({summary.failed}); "
+                        "stopping new scheduling"
+                    )
+                    break
+
+                rate_limiter.acquire()
+                token = tokens[next_token_index]
+                future = executor.submit(run_single_token, token, False)
+                futures[future] = token
+                summary.scheduled += 1
+                next_token_index += 1
+
+            if not futures:
+                break
+
+            done, _ = wait(set(futures.keys()), timeout=0.5, return_when=FIRST_COMPLETED)
+            if done:
+                consume_finished_futures(futures, summary, total_tokens=len(tokens))
+
+        consume_finished_futures(
+            futures,
+            summary,
+            total_tokens=len(tokens),
+            force_progress=True,
+        )
+
+    print(
+        f"Final summary: scheduled={summary.scheduled} completed={summary.completed} "
+        f"changed={summary.changed} no_change={summary.no_change} failed={summary.failed} "
+        f"jobs_inserted={summary.jobs_inserted} jobs_updated={summary.jobs_updated} "
+        f"jobs_skipped={summary.jobs_skipped} jobs_filtered={summary.jobs_filtered}"
+    )
+
+    if failure_threshold > 0 and summary.failed >= failure_threshold:
+        print("Unseen run ended after reaching the failure threshold")
+        return 1
+
+    return 0
+
+
 def main() -> None:
     """CLI entrypoint for collection control operations."""
     args = parse_args()
@@ -304,6 +432,12 @@ def main() -> None:
     try:
         if args.mode == "test":
             exit_code = run_test_mode()
+        elif args.mode == "new":
+            exit_code = run_unseen_scan(
+                rate_per_minute=args.rate_per_minute,
+                max_workers=args.max_workers,
+                failure_threshold=args.failure_threshold,
+            )
         else:
             exit_code = run_full_scan(
                 rate_per_minute=args.rate_per_minute,

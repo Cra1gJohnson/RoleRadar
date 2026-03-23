@@ -1,19 +1,26 @@
 import argparse
 import hashlib
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
 import psycopg
 import requests
 
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.append(str(SRC_ROOT))
+
+from env_loader import load_shared_env
 from upsert_jobs import (
     UpsertSummary,
-    extract_location_name,
-    is_united_states_location,
     process_board_payload,
 )
+
+load_shared_env()
 
 GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 GREENHOUSE_API_HEADERS = {
@@ -204,21 +211,6 @@ def resolve_snapshot_status(job_count: int, existing_status: Optional[str]) -> s
     return STATUS_WARM
 
 
-def has_united_states_job(payload: dict[str, Any]) -> bool:
-    """Return true when at least one job on the board is located in the U.S."""
-    jobs = payload.get("jobs")
-    if not isinstance(jobs, list):
-        return False
-
-    for job in jobs:
-        if not isinstance(job, dict):
-            continue
-        if is_united_states_location(extract_location_name(job)):
-            return True
-
-    return False
-
-
 def insert_snapshot(
     conn: psycopg.Connection,
     token: str,
@@ -227,7 +219,6 @@ def insert_snapshot(
     board_hash: str,
     company_name: Optional[str],
     status: str,
-    united_states: bool,
 ) -> int:
     """Insert the first snapshot row for a token and return the snapshot id."""
     with conn.cursor() as cur:
@@ -253,7 +244,7 @@ def insert_snapshot(
                 board_hash,
                 company_name,
                 status,
-                united_states,
+                None,
             ),
         )
         row = cur.fetchone()
@@ -383,8 +374,6 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
         sorted_job_ids = extract_sorted_job_ids(payload)
         board_hash = compute_board_hash(sorted_job_ids)
         company_name = extract_company_name(payload, sorted_job_ids)
-        united_states = has_united_states_job(payload)
-
         existing_snapshot = get_latest_snapshot(conn, token)
         next_status = resolve_snapshot_status(
             job_count=job_count,
@@ -398,7 +387,6 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
                     existing_snapshot.snapshot_id,
                     request_status=200,
                     status=next_status,
-                    united_states=united_states,
                 )
                 message = f"{token}: no board change detected"
                 log_info(message, verbose)
@@ -412,7 +400,6 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
                 board_hash=board_hash,
                 company_name=company_name,
                 status=next_status,
-                united_states=united_states,
             )
             message = f"{token}: board snapshot updated"
             log_info(message, verbose)
@@ -423,6 +410,12 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
                 snapshot_id=existing_snapshot.snapshot_id,
                 check_comp=True,
                 verbose=verbose,
+            )
+            update_snapshot(
+                conn,
+                existing_snapshot.snapshot_id,
+                request_status=200,
+                united_states=upsert_summary.united_states,
             )
             return build_upsert_result(
                 token=token,
@@ -440,7 +433,6 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
             board_hash=board_hash,
             company_name=company_name,
             status=next_status,
-            united_states=united_states,
         )
         message = f"{token}: board snapshot inserted"
         log_info(message, verbose)
@@ -451,6 +443,12 @@ def process_board_token(token: str, verbose: bool = True) -> BoardProcessResult:
             snapshot_id=snapshot_id,
             check_comp=False,
             verbose=verbose,
+        )
+        update_snapshot(
+            conn,
+            snapshot_id,
+            request_status=200,
+            united_states=upsert_summary.united_states,
         )
         return build_upsert_result(
             token=token,

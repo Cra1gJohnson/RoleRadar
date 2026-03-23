@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,13 @@ from typing import Any, Optional
 
 import psycopg
 
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.append(str(SRC_ROOT))
+
+from env_loader import load_shared_env
+
+load_shared_env()
 
 US_STATE_CODES = {
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI", "IA",
@@ -88,6 +96,7 @@ class UpsertSummary:
     skipped_count: int = 0
     filtered_count: int = 0
     failed_count: int = 0
+    united_states: bool = False
 
     @property
     def success(self) -> bool:
@@ -420,6 +429,7 @@ def process_board_payload(
 
     summary.filtered_count += filtered_count
     summary.failed_count += failed_count
+    summary.united_states = bool(normalized_jobs)
 
     if not normalized_jobs:
         log_info(

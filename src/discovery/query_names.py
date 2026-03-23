@@ -14,6 +14,14 @@ from urllib.parse import quote, urlparse
 import psycopg
 import requests
 
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.append(str(SRC_ROOT))
+
+from env_loader import load_shared_env
+
+load_shared_env()
+
 GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 GREENHOUSE_DOMAINS = {"boards.greenhouse.io", "job-boards.greenhouse.io"}
 QUERY_TEMPLATES = (

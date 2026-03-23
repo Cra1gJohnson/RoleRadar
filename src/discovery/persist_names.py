@@ -1,6 +1,15 @@
 import os
+import sys
 from pathlib import Path
 import psycopg
+
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.append(str(SRC_ROOT))
+
+from env_loader import load_shared_env
+
+load_shared_env()
 
 
 # Path to the discovery names file (same directory as this script)
