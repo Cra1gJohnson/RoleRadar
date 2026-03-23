@@ -44,13 +44,15 @@
   - Stores one fetched board snapshot per monitored request.
   - Current columns:
     - `snapshot_id` (primary key)
-    - `token` (foreign key to `board_token.token`)
+    - `token` (foreign key to `board_token.token` and unique constraint)
     - `fetched_at` (timestamp of snapshot fetch)
     - `request_status` (HTTP status code or request result)
     - `job_count` (count of jobs returned in the response)
     - `board_hash` (hash derived from sorted job IDs)
     - `company_name` (best available board-level company label)
+    - `status` (`board_priority`; values include `HOT`, `WARM`, `COLD`, `DEAD`)
   - Used to track board changes over time and decide whether job normalization should run.
+  - only one snapshot per board right now.
 - `greenhouse_job`
   - Stores normalized jobs derived from Greenhouse board snapshots.
   - Current columns:
@@ -64,7 +66,6 @@
     - `description`
     - `first_fetched_at`
     - `last_changed_at`
-    - `status` (`board_priority`, default `WARM`)
   - Intended to represent normalized job state for downstream use while preserving linkage to the source snapshot and board token.
 
 ## PostgreSQL Configuration (To Be Filled)
@@ -80,10 +81,10 @@
   - Key columns: `token`
 - Board snapshot table:
   - Table name: `greenhouse_board_snapshot`
-  - Key columns: `snapshot_id`, `token`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`
+  - Key columns: `snapshot_id`, `token`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`, `status`
 - Greenhouse job table:
   - Table name: `greenhouse_job`
-  - Key columns: `job_id`, `snapshot_id`, `token`, `company_name`, `title`, `location`, `url`, `description`, `first_fetched_at`, `last_changed_at`, `status`
+  - Key columns: `job_id`, `snapshot_id`, `token`, `company_name`, `title`, `location`, `url`, `description`, `first_fetched_at`, `last_changed_at`
 
 ## Operational Rules
 - Prefer idempotent writes wherever possible.
@@ -115,20 +116,24 @@
 - Extracts all `jobs[].id` values from the JSON response.
 - Sorts job IDs before hashing so the board hash is order-independent.
 - Inserts a new row into `greenhouse_board_snapshot` for each fetched board.
-- Records request status, fetch time, board hash, and job count.
+- Records request status, fetch time, board hash, job count, company name, and board status.
+- Marks empty boards as `COLD`.
 - Acts as the board snapshot layer for change detection.
 
 ## upsert_jobs.py Behavior
-- Reads board snapshots that require normalization.
+- Reads board snapshots that require job normalization.
+- takes parameters: payload(json), token(board_token), check_comp(bool)
+- check_comp indicates if there is an existing snapshot
+- if there is an existing snapshot then jobs must be check to see if they are up to date
 - Normalizes Greenhouse job payloads into the shape expected by `greenhouse_job`.
 - Inserts new jobs and updates existing jobs using upsert behavior.
-- Preserves linkage back to the originating `greenhouse_board_snapshot`.
-- Writes job-level fields currently defined in `greenhouse_job`, including `company_name`, `title`, `location`, `url`, `description`, `first_fetched_at`, `last_changed_at`, and `status`.
+- Preserves linkage back to the originating `greenhouse_board_snapshot` with token.
+- Writes job-level fields currently defined in `greenhouse_job`, including `company_name`, `title`, `location`, `url`, `description`, `first_fetched_at`, and `last_changed_at`.
 - Serves as the normalized jobs layer for downstream querying and analytics.
 
 ## Open Questions
 - Should Greenhouse-native identifiers such as the API `id`, `internal_job_id`, or `requisition_id` also be stored in `greenhouse_job`?
-- Should `status` in `greenhouse_job` remain tied to the `board_priority` enum, or move to a job-specific status model later?
+- How should the board-level `status` values `HOT`, `WARM`, `COLD`, and `DEAD` be assigned beyond the current empty-board => `COLD` rule?
 - How should dead boards or long-inactive boards be deprioritized over time?
 - What retry and backoff policy should apply to failed board requests?
 
