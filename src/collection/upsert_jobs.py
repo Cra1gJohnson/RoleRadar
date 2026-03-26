@@ -75,7 +75,6 @@ class JobRow:
     title: Optional[str]
     location: Optional[str]
     url: Optional[str]
-    description: Optional[str]
     updated_at: datetime
 
 
@@ -265,7 +264,6 @@ def normalize_job(
         title=normalize_text(job.get("title")),
         location=extract_location_name(job),
         url=normalize_text(job.get("absolute_url")),
-        description=None,
         updated_at=updated_at,
     )
 
@@ -346,12 +344,12 @@ def insert_job(conn: psycopg.Connection, job: JobRow) -> None:
                 title,
                 location,
                 url,
-                description,
                 first_fetched_at,
-                last_changed_at,
-                updated_at
+                updated_at,
+                candidate,
+                enriched
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
             """,
             (
                 job.snapshot_id,
@@ -361,8 +359,9 @@ def insert_job(conn: psycopg.Connection, job: JobRow) -> None:
                 job.title,
                 job.location,
                 job.url,
-                job.description,
                 job.updated_at,
+                None,
+                False,
             ),
         )
 
@@ -380,8 +379,6 @@ def update_job(conn: psycopg.Connection, existing_job_id: int, job: JobRow) -> N
                 title = %s,
                 location = %s,
                 url = %s,
-                description = %s,
-                last_changed_at = NOW(),
                 updated_at = %s
             WHERE job_id = %s
             """,
@@ -393,7 +390,6 @@ def update_job(conn: psycopg.Connection, existing_job_id: int, job: JobRow) -> N
                 job.title,
                 job.location,
                 job.url,
-                job.description,
                 job.updated_at,
                 existing_job_id,
             ),
