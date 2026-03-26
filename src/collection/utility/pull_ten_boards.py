@@ -7,7 +7,7 @@ from urllib.parse import quote
 import psycopg
 import requests
 
-SRC_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = Path(__file__).resolve().parents[2]
 if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
@@ -26,7 +26,7 @@ GREENHOUSE_API_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Connection": "keep-alive",
 }
-OUTPUT_DIR = Path(__file__).resolve().parent / "greenhouse_board_resp"
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "greenhouse_board_resp"
 
 
 def db_connect() -> psycopg.Connection:

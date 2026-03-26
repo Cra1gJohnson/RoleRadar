@@ -8,6 +8,15 @@ from typing import Optional
 
 import psycopg
 
+
+# this script is really slow. it pulls and evaulates line by line. then
+# inserts line by line. 
+# def should be optimized int the future. 
+# not that important rn. but if this is moved to look for a different set of jobs
+# then it needs to be optimized. 
+
+
+
 SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))

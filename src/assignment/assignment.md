@@ -10,6 +10,8 @@
 - `candidate_filter.py`: classifies unresolved Greenhouse jobs into candidate or non-candidate and initializes job enrichment rows.
 - `job_enrichment.py`: reserved for future job-level enrichment collection and persistence.
 - `company_enrichment.py`: reserved for future company-level enrichment collection and persistence.
+- `greenhouse_job_response/`: sampled individual Greenhouse job responses used as enrichment-context examples.
+- `utility/pull_ten_jobs.py`: local sampling utility for pulling ten random candidate job-detail responses.
 
 ## High-Level Workflow
 1. Read normalized Greenhouse jobs from PostgreSQL (`greenhouse_job`).
@@ -17,8 +19,9 @@
 3. Apply the assignment regex filter using job title and company name.
 4. Persist `candidate = TRUE` or `candidate = FALSE` back to `greenhouse_job`.
 5. For rows classified `candidate = TRUE`, insert a matching `job_id` into `green_job_enrich` if no row exists yet.
-6. Leave `enriched = FALSE` until a later enrichment step populates job-level details.
-7. Use `green_job_enrich` as the job-level enrichment store for later ranking inputs.
+6. Pull individual Greenhouse job detail responses for candidate jobs as needed.
+7. Leave `enriched = FALSE` until a later enrichment step populates job-level details.
+8. Use `green_job_enrich` as the job-level enrichment store for later ranking inputs.
 
 ## Data Entities
 - `greenhouse_job`
@@ -42,6 +45,18 @@
     - `enriched_at`
   - Uses `job_id` as the sole primary key in v1.
   - Does not use a separate `enrich_id`.
+- Individual Greenhouse job response
+  - Pull target for enrichment context:
+    - `GET https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{greenhouse_job_id}?pay_transparency=true&questions=true`
+  - Response fields that matter for downstream enrichment include:
+    - `content`
+    - `pay_input_ranges`
+    - `internal_job_id`
+    - `absolute_url`
+    - `company_name`
+    - `title`
+    - `location`
+    - application-question-related response content when present
 
 ## Operational Rules
 - Greenhouse is the only source in scope for assignment right now.
@@ -53,6 +68,7 @@
   - already-classified jobs are skipped
   - existing `green_job_enrich` rows are not modified during candidate classification
 - Company enrichment remains out of scope for now.
+- Sample job-detail pulls are for local context gathering only and do not mutate the database.
 
 ## candidate_filter.py Behavior
 - Connects to PostgreSQL using the shared env loader pattern used elsewhere in the repo.
@@ -72,6 +88,13 @@
 ## job_enrichment.py Behavior
 - Reserved for later job-level enrichment implementation.
 - Intended to populate fields such as `description`, salary data, `internal_job_id`, `application_questions`, and `enriched_at` for rows already initialized in `green_job_enrich`.
+
+## utility/pull_ten_jobs.py Behavior
+- Pulls sample individual Greenhouse job responses for local enrichment context.
+- Selects random jobs from `greenhouse_job` where `candidate = TRUE`.
+- Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint with `pay_transparency=true` and `questions=true`.
+- Writes markdown files to `greenhouse_job_response/` using the filename pattern `<token>_<greenhouse_job_id>.md`.
+- Uses the same markdown output style as the existing response examples: a `## GET ...` line followed by pretty-printed JSON.
 
 ## company_enrichment.py Behavior
 - Reserved for later company-level enrichment implementation.
