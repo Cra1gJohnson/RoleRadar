@@ -8,10 +8,11 @@
 ## Directory Scope
 - `assignment.md`: operating notes, assumptions, and future prompt context.
 - `candidate_filter.py`: classifies unresolved Greenhouse jobs into candidate or non-candidate and initializes job enrichment rows.
-- `job_enrichment.py`: reserved for future job-level enrichment collection and persistence.
+- `job_enrichment.py`: job-level enrichment worker for Greenhouse detail pulls and normalized updates.
 - `company_enrichment.py`: reserved for future company-level enrichment collection and persistence.
 - `greenhouse_job_response/`: sampled individual Greenhouse job responses used as enrichment-context examples.
 - `utility/pull_ten_jobs.py`: local sampling utility for pulling ten random candidate job-detail responses.
+- `utility/error_request.py`: utility for backfilling 404 request results from `utility/errors.md`.
 
 ## High-Level Workflow
 1. Read normalized Greenhouse jobs from PostgreSQL (`greenhouse_job`).
@@ -20,8 +21,9 @@
 4. Persist `candidate = TRUE` or `candidate = FALSE` back to `greenhouse_job`.
 5. For rows classified `candidate = TRUE`, insert a matching `job_id` into `green_job_enrich` if no row exists yet.
 6. Pull individual Greenhouse job detail responses for candidate jobs as needed.
-7. Leave `enriched = FALSE` until a later enrichment step populates job-level details.
-8. Use `green_job_enrich` as the job-level enrichment store for later ranking inputs.
+7. As soon as a job-detail GET returns a checked HTTP response, mark `greenhouse_job.enriched = TRUE`.
+8. If the response is `404`, record `green_job_enrich.request_status = 404`, leave the other enrichment fields blank, and let later downstream handling decide what to do with the gone job.
+9. Use `green_job_enrich` as the job-level enrichment store for later ranking inputs.
 
 ## Data Entities
 - `greenhouse_job`
@@ -42,6 +44,7 @@
     - `currency`
     - `internal_job_id`
     - `application_questions`
+    - `request_status`
     - `enriched_at`
   - Uses `job_id` as the sole primary key in v1.
   - Does not use a separate `enrich_id`.
@@ -69,6 +72,7 @@
   - existing `green_job_enrich` rows are not modified during candidate classification
 - Company enrichment remains out of scope for now.
 - Sample job-detail pulls are for local context gathering only and do not mutate the database.
+- A checked `404` is treated as a terminal availability result for the current enrichment pass and is stored in `green_job_enrich.request_status`.
 
 ## candidate_filter.py Behavior
 - Connects to PostgreSQL using the shared env loader pattern used elsewhere in the repo.
@@ -86,8 +90,24 @@
   - failures
 
 ## job_enrichment.py Behavior
-- Reserved for later job-level enrichment implementation.
-- Intended to populate fields such as `description`, salary data, `internal_job_id`, `application_questions`, and `enriched_at` for rows already initialized in `green_job_enrich`.
+- Reads work from `green_job_enrich` joined to `greenhouse_job`.
+- Selects rows that are present in `green_job_enrich` and still have `greenhouse_job.enriched = FALSE`.
+- Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint with `pay_transparency=true` and `questions=true`.
+- Runs with Python worker threads using an even rate limiter so request starts stay smooth rather than bursty.
+- Normalizes the individual job response into:
+  - `description`
+  - `min_salary`
+  - `max_salary`
+  - `currency`
+  - `internal_job_id`
+  - `application_questions`
+  - `enriched_at`
+- Stores `description` as readable plain text derived from the Greenhouse `content` field.
+- Uses `pay_input_ranges` as the primary salary source and falls back to best-effort salary parsing from the plain-text description when needed.
+- Stores `application_questions` as normalized JSON built from relevant question-related sections in the payload.
+- On successful `200` responses, updates `green_job_enrich`, writes `request_status = 200`, and marks `greenhouse_job.enriched = TRUE`.
+- On checked `404` responses, writes `green_job_enrich.request_status = 404`, marks `greenhouse_job.enriched = TRUE`, and leaves the other enrichment fields blank.
+- Leaves non-404 request failures eligible for retry by keeping `greenhouse_job.enriched = FALSE`.
 
 ## utility/pull_ten_jobs.py Behavior
 - Pulls sample individual Greenhouse job responses for local enrichment context.
@@ -95,6 +115,14 @@
 - Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint with `pay_transparency=true` and `questions=true`.
 - Writes markdown files to `greenhouse_job_response/` using the filename pattern `<token>_<greenhouse_job_id>.md`.
 - Uses the same markdown output style as the existing response examples: a `## GET ...` line followed by pretty-printed JSON.
+
+## utility/error_request.py Behavior
+- Reads `utility/errors.md` line by line.
+- Parses lines in the format produced by `job_enrichment.py` for checked `404` request failures.
+- Extracts `job_id` values from those lines.
+- Updates `green_job_enrich.request_status = 404` for each parsed `job_id`.
+- Marks the matching `greenhouse_job.enriched = TRUE` for each parsed `job_id`.
+- Ignores non-error lines such as progress output.
 
 ## company_enrichment.py Behavior
 - Reserved for later company-level enrichment implementation.
