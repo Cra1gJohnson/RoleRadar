@@ -1,11 +1,13 @@
 # Assignment Directory Guide
 
 ## Purpose
+
 - Define the intent of `src/assignment/`.
 - Standardize downstream candidate classification and enrichment preparation for Greenhouse jobs.
 - Keep ranking-oriented and enrichment-oriented data outside the thin normalized collection tables.
 
 ## Directory Scope
+
 - `assignment.md`: operating notes, assumptions, and future prompt context.
 - `candidate_filter.py`: classifies unresolved Greenhouse jobs into candidate or non-candidate and initializes job enrichment rows.
 - `job_enrichment.py`: job-level enrichment worker for Greenhouse detail pulls and normalized updates.
@@ -15,6 +17,7 @@
 - `utility/error_request.py`: utility for backfilling 404 request results from `utility/errors.md`.
 
 ## High-Level Workflow
+
 1. Read normalized Greenhouse jobs from PostgreSQL (`greenhouse_job`).
 2. Select only rows where `candidate IS NULL`.
 3. Apply the assignment regex filter using job title and company name.
@@ -26,6 +29,7 @@
 9. Use `green_job_enrich` as the job-level enrichment store for later ranking inputs.
 
 ## Data Entities
+
 - `greenhouse_job`
   - Thin normalized job table produced by collection.
   - Important downstream fields:
@@ -62,6 +66,7 @@
     - application-question-related response content when present
 
 ## Operational Rules
+
 - Greenhouse is the only source in scope for assignment right now.
 - The candidate filter operates incrementally by reading only `greenhouse_job` rows with `candidate IS NULL`.
 - The regex logic lives in `candidate_filter.py`; a materialized view may exist for debugging or reference but is not the runtime source of truth.
@@ -75,6 +80,7 @@
 - A checked `404` is treated as a terminal availability result for the current enrichment pass and is stored in `green_job_enrich.request_status`.
 
 ## candidate_filter.py Behavior
+
 - Connects to PostgreSQL using the shared env loader pattern used elsewhere in the repo.
 - Reads unresolved jobs from `greenhouse_job`.
 - Applies the canonical title/company regex used for likely-job selection.
@@ -90,6 +96,7 @@
   - failures
 
 ## job_enrichment.py Behavior
+
 - Reads work from `green_job_enrich` joined to `greenhouse_job`.
 - Selects rows that are present in `green_job_enrich` and still have `greenhouse_job.enriched = FALSE`.
 - Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint with `pay_transparency=true` and `questions=true`.
@@ -110,6 +117,7 @@
 - Leaves non-404 request failures eligible for retry by keeping `greenhouse_job.enriched = FALSE`.
 
 ## utility/pull_ten_jobs.py Behavior
+
 - Pulls sample individual Greenhouse job responses for local enrichment context.
 - Selects random jobs from `greenhouse_job` where `candidate = TRUE`.
 - Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint with `pay_transparency=true` and `questions=true`.
@@ -117,6 +125,7 @@
 - Uses the same markdown output style as the existing response examples: a `## GET ...` line followed by pretty-printed JSON.
 
 ## utility/error_request.py Behavior
+
 - Reads `utility/errors.md` line by line.
 - Parses lines in the format produced by `job_enrichment.py` for checked `404` request failures.
 - Extracts `job_id` values from those lines.
@@ -125,18 +134,22 @@
 - Ignores non-error lines such as progress output.
 
 ## company_enrichment.py Behavior
+
 - Reserved for later company-level enrichment implementation.
 - No company-level behavior is defined in v1.
 
 ## Prompt Context for Future Work
+
 - Use this directory as the source of truth for downstream Greenhouse assignment scope.
 - Keep candidate classification separate from job enrichment and separate from later ranking.
 - Preserve `greenhouse_job` as the thin normalized source table and store heavier downstream fields in enrichment-specific tables.
 
 ## Open Questions
+
 - When should a previously classified job be reset to `candidate = NULL` for re-evaluation?
 - Which additional downstream fields should eventually move into company-level enrichment rather than job-level enrichment?
 - How should ranking combine job fit, interview probability, compensation, and application friction once enrichment data is available?
 
 ## Revision Notes
+
 - Keep this file updated as assignment scripts and enrichment schemas evolve.

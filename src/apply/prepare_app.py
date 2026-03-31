@@ -17,7 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from env_loader import load_shared_env
 from apply.green_apply_schema import ensure_green_apply_schema
-from scoring.utility.export_greenhouse_jobs_json import parse_application_questions
+from scoring.utility.green_as_json import parse_application_questions
 
 load_shared_env()
 

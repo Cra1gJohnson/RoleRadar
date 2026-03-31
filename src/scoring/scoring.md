@@ -1,11 +1,13 @@
 # Scoring Directory Guide
 
 ## Purpose
+
 - Define the intent of `src/scoring/`.
 - Standardize LLM-based job scoring after enrichment is complete.
 - Keep scoring logic separate from collection, assignment, and enrichment.
 
 ## Directory Scope
+
 - `scoring.md`: operating notes, assumptions, and prompt-ready context.
 - `score_job.py`: scoring worker that sends enriched jobs to Gemini and persists score results.
 - `prompt1.md`: base scoring prompt template.
@@ -13,6 +15,7 @@
 - `enrichment_display/`: sample exported JSON files for local inspection and prompt iteration.
 
 ## High-Level Workflow
+
 1. Read jobs from `greenhouse_job` joined to `green_job_enrich`.
 2. Select only rows where `greenhouse_job.enriched = TRUE` and `green_job_enrich.ranked IS NULL`.
 3. Format each selected row into a lean scoring JSON payload.
@@ -27,6 +30,7 @@
 12. Mark `green_job_enrich.ranked = TRUE` after a successful rank write.
 
 ## Data Entities
+
 - `greenhouse_job`
   - Source table for normalized jobs.
   - Relevant fields:
@@ -61,6 +65,7 @@
   - `response` stores the full raw Gemini JSON response for the batch that produced the row.
 
 ## Operational Rules
+
 - Gemini is called through `google-genai`, not a raw HTTP client.
 - API key comes from `GEMINI_API`.
 - The hardcoded model is `gemini-2.5-flash-lite`.
@@ -75,6 +80,7 @@
 - Failed API, parse, or database operations leave `green_job_enrich.ranked` unchanged so the job can be retried later.
 
 ## score_job.py Behavior
+
 - Supports:
   - `test` mode with a default limit of `1`
   - `full` mode with a default limit of `10`
@@ -91,9 +97,11 @@
 - Prints concise per-job and final summaries.
 
 ## Prompt Context for Future Work
+
 - Keep prompt edits in `prompt1.md` instead of inlining prompt text in code.
 - Keep the JSON input shape for scoring small and explicit unless a prompt revision explicitly requires a schema change.
 - Treat scoring as a downstream interpretation layer over already-enriched data, not as a replacement for enrichment.
 
 ## Revision Notes
+
 - Keep this file updated as scoring prompts, models, or score persistence rules evolve.
