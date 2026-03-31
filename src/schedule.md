@@ -24,8 +24,13 @@ Tasks:
 - - implemented validity check for previosly enriched jobs
 
 - improve scoring
+- - improved promp and with shorter context and lower cost
+
 - improve question answering
+- - began attempt at logic for question answering
+
 - implement playwright and chrome connection
+-- was able to get browser opening and some question fill
 
 - add delete constraints to db
 - - added cascade constraints for child tables of green_job.

@@ -10,7 +10,8 @@
 - `apply.md`: operating notes and queue semantics.
 - `order_jobs.py`: keyboard-only CLI for threshold selection and job approval.
 - `prepare_app.py`: AI-powered application-question prep for queued jobs.
-- `prompt1.md`: prompt template used for application-question answers.
+- `open_apply_jobs.py`: Playwright browser opener and form filler for queued application URLs.
+- `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
 - `green_apply_schema.py`: shared helper for creating and evolving the apply queue table.
 
@@ -27,6 +28,7 @@
 9. Mark `green_score.applied = TRUE` after approval so the job leaves the queue.
 10. Run `prepare_app.py` later to fill in AI answers for queued jobs where `questions = FALSE`.
 11. Store the raw AI response in `green_apply.response` and flip `green_apply.questions = TRUE` after a successful prep write.
+12. Start Chrome with `src/execute.sh`, then run `open_apply_jobs.py` to attach over CDP, open the next queued application URL, and fill the application fields.
 
 ## Data Entities
 
@@ -81,8 +83,10 @@
 
 - Reads jobs from `green_apply` where `questions = FALSE`.
 - Joins `green_job`, `green_enrich`, and `green_score` for application context.
-- Loads `prompt1.md` and injects one job at a time.
-- Sends the prompt to the AI API and stores the raw response in `green_apply.response`.
+- Loads `prompt1.txt` and injects one job at a time.
+- Filters out repeated common questions from `src/apply/green_questions/common_questions.json`.
+- Keeps only free-text fields such as `input_text` and `textarea` for the AI request.
+- Sends the reduced prompt to the AI API and stores the raw response in `green_apply.response`.
 - Sets `green_apply.questions = TRUE` after a successful response write.
 - Leaves failed jobs eligible for retry by keeping `questions = FALSE`.
 
@@ -91,6 +95,17 @@
 - Keep this directory focused on application queueing and later application automation.
 - Keep the queue table thin so additional application metadata can be added later by downstream scripts.
 - Use `green_score.applied` as the immediate queue completion flag.
+- Use `src/execute.sh` to launch Chrome with `Profile 2`, then attach Playwright to `http://127.0.0.1:9222`.
+- Fill common questions first, then custom text responses from `green_apply.response`.
+
+## open_apply_jobs.py Behavior
+
+- Waits for the Chrome CDP endpoint started by `src/execute.sh`.
+- Loads queued jobs from `green_apply` where `questions = TRUE`.
+- Opens each job URL in a new tab within the existing Chrome profile.
+- Fills hardcoded common questions first using `src/apply/green_questions/common_questions.json`.
+- Fills remaining custom text questions using the parsed JSON stored in `green_apply.response`.
+- Reports missing common or custom answers in the terminal so the form can be reviewed before submission.
 
 ## Revision Notes
 

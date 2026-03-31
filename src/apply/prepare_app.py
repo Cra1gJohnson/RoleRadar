@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -16,15 +17,16 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
-from apply.green_apply_schema import ensure_green_apply_schema
 from scoring.utility.green_as_json import parse_application_questions
 
 load_shared_env()
 
 DEFAULT_RATE_PER_MINUTE = 12
 MODEL_NAME = "gemini-2.5-flash-lite"
-PROMPT_FILE_NAME = "prompt1.md"
+PROMPT_FILE_NAME = "prompt1.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
+COMMON_QUESTIONS_PATH = Path(__file__).resolve().parent / "green_questions" / "common_questions.json"
+TEXT_ENTRY_FIELD_TYPES = {"input_text", "textarea"}
 
 
 @dataclass
@@ -117,6 +119,77 @@ def resolve_limit(explicit_limit: Optional[int]) -> Optional[int]:
     return explicit_limit
 
 
+def normalize_question_label(label: Any) -> str:
+    """Normalize a question label for stable registry matching."""
+    if not isinstance(label, str):
+        return ""
+    return " ".join(label.split()).strip().lower()
+
+
+@lru_cache(maxsize=1)
+def load_common_question_labels() -> set[str]:
+    """Load the common-question registry used to suppress repeated prompts."""
+    raw_text = COMMON_QUESTIONS_PATH.read_text(encoding="utf-8")
+    payload = json.loads(raw_text)
+    questions = payload.get("questions", [])
+    if not isinstance(questions, list):
+        return set()
+
+    labels: set[str] = set()
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        normalized_label = normalize_question_label(question.get("label"))
+        if normalized_label:
+            labels.add(normalized_label)
+    return labels
+
+
+def question_is_text_only(question: Any) -> bool:
+    """Return True when every field in a question is a free-text entry field."""
+    if not isinstance(question, dict):
+        return False
+
+    fields = question.get("fields")
+    if not isinstance(fields, list) or not fields:
+        return False
+
+    seen_text_field = False
+    for field in fields:
+        if not isinstance(field, dict):
+            return False
+        field_type = field.get("type")
+        if field_type not in TEXT_ENTRY_FIELD_TYPES:
+            return False
+        seen_text_field = True
+
+    return seen_text_field
+
+
+def filter_application_questions(application_questions: Any) -> list[dict[str, Any]]:
+    """Keep only free-text questions that are not in the common-question registry."""
+    if not isinstance(application_questions, list):
+        return []
+
+    common_question_labels = load_common_question_labels()
+    filtered_questions: list[dict[str, Any]] = []
+
+    for question in application_questions:
+        if not question_is_text_only(question):
+            continue
+
+        normalized_label = normalize_question_label(question.get("label"))
+        if not normalized_label:
+            continue
+
+        if normalized_label in common_question_labels:
+            continue
+
+        filtered_questions.append(question)
+
+    return filtered_questions
+
+
 def fetch_jobs_to_prepare(
     conn: psycopg.Connection,
     limit: Optional[int],
@@ -182,7 +255,7 @@ def build_job_payload(job: ApplicationPrepJob) -> dict[str, Any]:
         "min_salary": job.min_salary,
         "max_salary": job.max_salary,
         "overall": job.overall,
-        "application_questions": job.application_questions,
+        "application_questions": filter_application_questions(job.application_questions),
     }
 
 
@@ -218,6 +291,18 @@ def request_ai_response(client: genai.Client, prompt: str) -> str:
     if not isinstance(response_text, str) or not response_text.strip():
         raise ValueError("Gemini returned an empty response")
     return response_text
+
+
+def build_empty_response(job_id: int) -> str:
+    """Create a deterministic empty-answer response when no free-text prompts remain."""
+    return json.dumps(
+        {
+            "job_id": job_id,
+            "answers": [],
+            "confidence": "low",
+        },
+        ensure_ascii=False,
+    )
 
 
 def parse_ai_response(response_text: str, expected_job_id: int) -> dict[str, Any]:
@@ -264,7 +349,6 @@ def prepare_applications(limit: Optional[int], rate_per_minute: int) -> PrepSumm
     summary = PrepSummary()
 
     with db_connect() as conn:
-        ensure_green_apply_schema(conn)
         jobs = fetch_jobs_to_prepare(conn, limit)
 
     summary.selected = len(jobs)
@@ -278,7 +362,23 @@ def prepare_applications(limit: Optional[int], rate_per_minute: int) -> PrepSumm
     )
 
     for job in jobs:
-        prompt = render_prompt(prompt_template, build_job_payload(job))
+        job_payload = build_job_payload(job)
+        filtered_questions = job_payload["application_questions"]
+
+        if not filtered_questions:
+            empty_response = build_empty_response(job.job_id)
+            try:
+                persist_response(job.job_id, empty_response, True)
+            except psycopg.Error as exc:
+                print(f"job_id={job.job_id} database failed: {exc}")
+                summary.database_failures += 1
+                continue
+
+            summary.prepared += 1
+            print(f"job_id={job.job_id} prepared (no free-text questions)")
+            continue
+
+        prompt = render_prompt(prompt_template, job_payload)
 
         try:
             rate_limiter.acquire()

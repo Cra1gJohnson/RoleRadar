@@ -12,7 +12,6 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
-from apply.green_apply_schema import ensure_green_apply_schema
 
 load_shared_env()
 
@@ -217,7 +216,6 @@ def run_apply_queue() -> ApplySummary:
     summary = ApplySummary()
 
     with db_connect() as conn:
-        ensure_green_apply_schema(conn)
         threshold = prompt_for_threshold()
         summary.selected_threshold = threshold
         summary.available = count_jobs(conn, threshold)
