@@ -68,7 +68,7 @@ def job_exists(conn: psycopg.Connection, job_id: int) -> bool:
         cur.execute(
             """
             SELECT 1
-            FROM green_job_enrich
+            FROM green_enrich
             WHERE job_id = %s
             """,
             (job_id,),
@@ -101,7 +101,7 @@ def process_errors_file() -> BackfillSummary:
 
             try:
                 if not job_exists(conn, job_id):
-                    print(f"job_id={job_id} skipped: no green_job_enrich row found")
+                    print(f"job_id={job_id} skipped: no green_enrich row found")
                     summary.skipped_count += 1
                     continue
 

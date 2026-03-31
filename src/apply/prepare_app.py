@@ -132,17 +132,17 @@ def fetch_jobs_to_prepare(
             ge.description,
             ge.min_salary,
             ge.max_salary,
-            gr.overall,
+            gs.overall,
             ge.application_questions
         FROM green_apply AS ga
-        JOIN greenhouse_job AS gj
+        JOIN green_job AS gj
           ON gj.job_id = ga.job_id
-        JOIN green_job_enrich AS ge
+        JOIN green_enrich AS ge
           ON ge.job_id = ga.job_id
-        JOIN green_job_rank AS gr
-          ON gr.job_id = ga.job_id
+        JOIN green_score AS gs
+          ON gs.job_id = ga.job_id
         WHERE ga.questions IS FALSE
-        ORDER BY gr.overall DESC, ga.job_id ASC
+        ORDER BY gs.overall DESC, ga.job_id ASC
     """
     params: list[Any] = []
     if limit is not None:

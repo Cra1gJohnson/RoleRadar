@@ -93,13 +93,13 @@ def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
         cur.execute(
             """
             SELECT COUNT(*)
-            FROM greenhouse_job AS gj
-            JOIN green_job_enrich AS ge
+            FROM green_job AS gj
+            JOIN green_enrich AS ge
               ON ge.job_id = gj.job_id
-            JOIN green_job_rank AS gr
-              ON gr.job_id = gj.job_id
-            WHERE gr.applied IS FALSE
-              AND gr.overall >= %s
+            JOIN green_score AS gs
+              ON gs.job_id = gj.job_id
+            WHERE gs.applied IS FALSE
+              AND gs.overall >= %s
             """,
             (threshold,),
         )
@@ -119,15 +119,15 @@ def fetch_jobs(conn: psycopg.Connection, threshold: int) -> list[ApplyJob]:
                 gj.location,
                 ge.min_salary,
                 gj.url,
-                gr.overall
-            FROM greenhouse_job AS gj
-            JOIN green_job_enrich AS ge
+                gs.overall
+            FROM green_job AS gj
+            JOIN green_enrich AS ge
               ON ge.job_id = gj.job_id
-            JOIN green_job_rank AS gr
-              ON gr.job_id = gj.job_id
-            WHERE gr.applied IS FALSE
-              AND gr.overall >= %s
-            ORDER BY gr.overall DESC, gj.job_id ASC
+            JOIN green_score AS gs
+              ON gs.job_id = gj.job_id
+            WHERE gs.applied IS FALSE
+              AND gs.overall >= %s
+            ORDER BY gs.overall DESC, gj.job_id ASC
             """,
             (threshold,),
         )
@@ -200,7 +200,7 @@ def approve_job(job_id: int) -> None:
                 )
                 cur.execute(
                     """
-                    UPDATE green_job_rank
+                    UPDATE green_score
                     SET applied = TRUE
                     WHERE job_id = %s
                     """,

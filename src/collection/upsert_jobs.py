@@ -317,7 +317,7 @@ def fetch_existing_jobs(
         cur.execute(
             """
             SELECT job_id, greenhouse_job_id, updated_at
-            FROM greenhouse_job
+            FROM green_job
             WHERE token = %s
               AND greenhouse_job_id = ANY(%s)
             """,
@@ -336,7 +336,7 @@ def insert_job(conn: psycopg.Connection, job: JobRow) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO greenhouse_job (
+            INSERT INTO green_job (
                 snapshot_id,
                 token,
                 greenhouse_job_id,
@@ -371,7 +371,7 @@ def update_job(conn: psycopg.Connection, existing_job_id: int, job: JobRow) -> N
     with conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE greenhouse_job
+            UPDATE green_job
             SET snapshot_id = %s,
                 token = %s,
                 greenhouse_job_id = %s,
@@ -404,7 +404,7 @@ def process_board_payload(
     verbose: bool = True,
 ) -> UpsertSummary:
     """
-    Normalize a board payload and write jobs into greenhouse_job.
+    Normalize a board payload and write jobs into green_job.
 
     When check_comp is false, every normalized job is inserted. When check_comp is
     true, rows are compared by (token, greenhouse_job_id) and only changed rows are

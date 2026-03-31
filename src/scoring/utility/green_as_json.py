@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for exporting ranked job inputs as JSON."""
     parser = argparse.ArgumentParser(
         description=(
-            "Join greenhouse_job and green_job_enrich and export scoring-ready job JSON."
+            "Join green_job and green_enrich and export scoring-ready job JSON."
         )
     )
     parser.add_argument(
@@ -91,22 +91,22 @@ def fetch_jobs(
             COALESCE(gje.min_salary, 0) AS min_salary,
             COALESCE(gje.max_salary, 0) AS max_salary,
             gje.application_questions
-        FROM greenhouse_job AS ghj
-        JOIN green_job_enrich AS gje
-          ON gje.job_id = ghj.job_id
+        FROM green_job AS gj
+        JOIN green_enrich AS ge
+          ON ge.job_id = gj.job_id
     """
 
     conditions: list[str] = []
     params: list[Any] = []
 
     if job_id is not None:
-        conditions.append("ghj.job_id = %s")
+        conditions.append("gj.job_id = %s")
         params.append(job_id)
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
-    query += " ORDER BY ghj.job_id"
+    query += " ORDER BY gj.job_id"
 
     if limit is not None:
         query += " LIMIT %s"

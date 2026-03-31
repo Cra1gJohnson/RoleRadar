@@ -170,15 +170,15 @@ def fetch_pending_enrichment_jobs(
 ) -> list[EnrichmentWorkItem]:
     """Load jobs that have an enrichment row but have not been marked enriched yet."""
     query = """
-        SELECT gje.job_id, ghj.token, ghj.greenhouse_job_id
-        FROM green_job_enrich AS gje
-        JOIN greenhouse_job AS ghj
-          ON ghj.job_id = gje.job_id
-        WHERE ghj.enriched = FALSE
-          AND gje.request_status IS DISTINCT FROM 404
-          AND ghj.token IS NOT NULL
-          AND ghj.greenhouse_job_id IS NOT NULL
-        ORDER BY gje.job_id
+        SELECT ge.job_id, gj.token, gj.greenhouse_job_id
+        FROM green_enrich AS ge
+        JOIN green_job AS gj
+          ON gj.job_id = ge.job_id
+        WHERE gj.enriched = FALSE
+          AND ge.request_status IS DISTINCT FROM 404
+          AND gj.token IS NOT NULL
+          AND gj.greenhouse_job_id IS NOT NULL
+        ORDER BY ge.job_id
     """
     params: tuple[object, ...] = ()
     if limit is not None:
@@ -427,7 +427,7 @@ def mark_job_request_status(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE green_job_enrich
+                    UPDATE green_enrich
                     SET request_status = %s
                     WHERE job_id = %s
                     """,
@@ -437,7 +437,7 @@ def mark_job_request_status(
                 if mark_enriched:
                     cur.execute(
                         """
-                        UPDATE greenhouse_job
+                        UPDATE green_job
                         SET enriched = TRUE
                         WHERE job_id = %s
                         """,
@@ -457,7 +457,7 @@ def persist_enrichment(job_id: int, normalized: NormalizedEnrichment) -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE green_job_enrich
+                    UPDATE green_enrich
                     SET description = %s,
                         min_salary = %s,
                         max_salary = %s,
@@ -482,7 +482,7 @@ def persist_enrichment(job_id: int, normalized: NormalizedEnrichment) -> None:
 
                 cur.execute(
                     """
-                    UPDATE greenhouse_job
+                    UPDATE green_job
                     SET enriched = TRUE
                     WHERE job_id = %s
                     """,
@@ -624,7 +624,7 @@ def run_enrichment(limit: Optional[int], rate_per_minute: int, max_workers: int)
         work_items = fetch_pending_enrichment_jobs(conn, limit)
 
     if not work_items:
-        print("No unenriched green_job_enrich rows found")
+        print("No unenriched green_enrich rows found")
         return 0
 
     print(

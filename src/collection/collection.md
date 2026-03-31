@@ -10,7 +10,7 @@
 - `collection.md`: operating notes, assumptions, and future prompt context.
 - `collection_control.py`: control script for collection scheduling and monitoring.
 - `board_hash.py`: board snapshot fetcher and hash tracker for Greenhouse boards.
-- `upsert_jobs.py`: job normalization and upsert runner for `greenhouse_job`.
+- `upsert_jobs.py`: job normalization and upsert runner for `green_job`.
 - `pull_ten.py`: utility script for fetching sample board responses during development.
 
 ## High-Level Workflow
@@ -21,7 +21,7 @@
 5. Persist a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
 6. Detect whether the latest board hash differs from the previous successful snapshot.
 7. Normalize jobs from changed board snapshots.
-8. Upsert normalized jobs into PostgreSQL (`greenhouse_job`).
+8. Upsert normalized jobs into PostgreSQL (`green_job`).
 9. Record monitoring state so the next poll cycle can prioritize boards correctly.
 
 ## Collection Targets
@@ -54,7 +54,7 @@
     - `united_states` (whether the latest normalization pass found at least one U.S. job)
   - Used to track board changes over time and decide whether job normalization should run.
   - Only one snapshot per board right now.
-- `greenhouse_job`
+- `green_job`
   - Stores normalized jobs derived from Greenhouse board snapshots.
   - Current columns:
     - `job_id` (primary key)
@@ -87,7 +87,7 @@
   - Table name: `greenhouse_board_snapshot`
   - Key columns: `snapshot_id`, `token`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`, `status`, `united_states`
 - Greenhouse job table:
-  - Table name: `greenhouse_job`
+  - Table name: `green_job`
   - Key columns: `job_id`, `snapshot_id`, `token`, `greenhouse_job_id`, `company_name`, `title`, `location`, `url`, `first_fetched_at`, `updated_at`, `candidate`, `enriched`
 
 ## Operational Rules
@@ -106,9 +106,9 @@
   - collection scheduling and monitoring
   - board snapshot fetching and hashing
   - job normalization and upsert
-- Prefer storing board-level evidence in `greenhouse_board_snapshot` and normalized job-level data in `greenhouse_job`.
+- Prefer storing board-level evidence in `greenhouse_board_snapshot` and normalized job-level data in `green_job`.
 - Optimize for repeated polling across thousands of boards without unnecessary reprocessing.
-- Keep `greenhouse_job` minimal so enrichment-specific data can live in downstream tables.
+- Keep `green_job` minimal so enrichment-specific data can live in downstream tables.
 
 ## collection_control.py Behavior
 - Owns monitoring cadence and polling decisions.
@@ -131,19 +131,19 @@
 - Takes parameters: payload (json), token (board_token), check_comp (bool).
 - `check_comp` indicates if there is an existing snapshot.
 - If there is an existing snapshot then jobs must be checked to see if they are up to date.
-- Normalizes Greenhouse job payloads into the shape expected by `greenhouse_job`.
+- Normalizes Greenhouse job payloads into the shape expected by `green_job`.
 - Inserts new jobs and updates existing jobs using upsert behavior.
 - Preserves linkage back to the originating `greenhouse_board_snapshot` with token.
-- Writes the thin job-level fields currently defined in `greenhouse_job`, including `company_name`, `title`, `location`, `url`, `first_fetched_at`, `updated_at`, `candidate`, and `enriched`.
+- Writes the thin job-level fields currently defined in `green_job`, including `company_name`, `title`, `location`, `url`, `first_fetched_at`, `updated_at`, `candidate`, and `enriched`.
 - Leaves downstream enrichment data outside the collection layer.
 - Serves as the normalized jobs layer for downstream querying and analytics.
 
 ## Open Questions
-- Should Greenhouse-native identifiers such as `internal_job_id` or `requisition_id` also be stored in `greenhouse_job`?
+- Should Greenhouse-native identifiers such as `internal_job_id` or `requisition_id` also be stored in `green_job`?
 - How should the board-level `status` values `HOT`, `WARM`, `COLD`, and `DEAD` be assigned beyond the current empty-board => `COLD` rule?
 - How should dead boards or long-inactive boards be deprioritized over time?
 - What retry and backoff policy should apply to failed board requests?
 
 ## Revision Notes
 - Keep this file updated as the collection schema and scripts evolve.
-- Update this file again as `greenhouse_job` gains or drops normalized identifiers or lifecycle fields.
+- Update this file again as `green_job` gains or drops normalized identifiers or lifecycle fields.

@@ -78,7 +78,7 @@ def fetch_random_candidate_jobs(
         cur.execute(
             """
             SELECT token, greenhouse_job_id
-            FROM greenhouse_job
+            FROM green_job
             WHERE candidate = TRUE
               AND token IS NOT NULL
               AND greenhouse_job_id IS NOT NULL

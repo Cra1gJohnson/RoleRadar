@@ -10,7 +10,7 @@ def ensure_green_apply_schema(conn: psycopg.Connection) -> None:
             """
             CREATE TABLE IF NOT EXISTS green_apply (
                 job_id bigint PRIMARY KEY
-                    REFERENCES greenhouse_job(job_id)
+                    REFERENCES green_job(job_id)
                     ON DELETE CASCADE,
                 questions boolean NOT NULL DEFAULT FALSE,
                 response text

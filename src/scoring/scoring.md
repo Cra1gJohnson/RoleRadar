@@ -16,8 +16,8 @@
 
 ## High-Level Workflow
 
-1. Read jobs from `greenhouse_job` joined to `green_job_enrich`.
-2. Select only rows where `greenhouse_job.enriched = TRUE` and `green_job_enrich.ranked IS NULL`.
+1. Read jobs from `green_job` joined to `green_enrich`.
+2. Select only rows where `green_job.enriched = TRUE` and `green_enrich.ranked IS NULL`.
 3. Format each selected row into a lean scoring JSON payload.
 4. Group jobs into batches of up to 20 rows.
 5. Load `prompt1.md` and replace `{JOB JSON HERE}` with a `"jobs"` array containing the current batch.
@@ -26,12 +26,12 @@
 8. Parse the returned job-level subscores.
 9. Compute `overall` from the four subscores.
 10. Sort the scored batch before persistence.
-11. Upsert each result into `green_job_rank`.
-12. Mark `green_job_enrich.ranked = TRUE` after a successful rank write.
+11. Upsert each result into `green_score`.
+12. Mark `green_enrich.ranked = TRUE` after a successful rank write.
 
 ## Data Entities
 
-- `greenhouse_job`
+- `green_job`
   - Source table for normalized jobs.
   - Relevant fields:
     - `job_id`
@@ -39,7 +39,7 @@
     - `title`
     - `location`
     - `enriched`
-- `green_job_enrich`
+- `green_enrich`
   - Source table for normalized enrichment content.
   - Relevant fields:
     - `job_id`
@@ -48,7 +48,7 @@
     - `max_salary`
     - `application_questions`
     - `ranked`
-- `green_job_rank`
+- `green_score`
   - Output table for scoring results.
   - Relevant fields:
     - `job_id`
@@ -72,12 +72,12 @@
 - Gemini request starts are evenly rate-limited to `12` per minute by default.
 - Input tokens are billed at `$0.10 / 1,000,000`.
 - Output tokens are billed at `$0.40 / 1,000,000`.
-- `green_job_rank.prompt` stores the prompt file name, currently `prompt1.md`.
-- `green_job_rank.response` stores the full raw JSON text returned by Gemini.
+- `green_score.prompt` stores the prompt file name, currently `prompt1.md`.
+- `green_score.response` stores the full raw JSON text returned by Gemini.
 - Individual score fields are stored on a `0-100` scale.
 - `overall` is computed from the weighted formula currently implemented in `score_job.py`.
-- Scoring only marks `green_job_enrich.ranked = TRUE` after a successful DB write to `green_job_rank`.
-- Failed API, parse, or database operations leave `green_job_enrich.ranked` unchanged so the job can be retried later.
+- Scoring only marks `green_enrich.ranked = TRUE` after a successful DB write to `green_score`.
+- Failed API, parse, or database operations leave `green_enrich.ranked` unchanged so the job can be retried later.
 
 ## score_job.py Behavior
 

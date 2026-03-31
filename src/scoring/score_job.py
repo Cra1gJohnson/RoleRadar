@@ -192,15 +192,15 @@ def fetch_jobs_to_score(conn: psycopg.Connection, limit: int) -> list[JobScoreIn
                 ghj.company_name,
                 ghj.title,
                 ghj.location,
-                gje.description,
-                COALESCE(gje.min_salary, 0) AS min_salary,
-                COALESCE(gje.max_salary, 0) AS max_salary
-            FROM greenhouse_job AS ghj
-            JOIN green_job_enrich AS gje
-              ON gje.job_id = ghj.job_id
-            WHERE ghj.enriched = TRUE
-              AND gje.ranked IS NULL
-            ORDER BY ghj.job_id
+                ge.description,
+                COALESCE(ge.min_salary, 0) AS min_salary,
+                COALESCE(ge.max_salary, 0) AS max_salary
+            FROM green_job AS gj
+            JOIN green_enrich AS ge
+              ON ge.job_id = gj.job_id
+            WHERE gj.enriched = TRUE
+              AND ge.ranked IS NULL
+            ORDER BY gj.job_id
             LIMIT %s
             """,
             (limit,),
@@ -406,7 +406,7 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO green_job_rank (
+                    INSERT INTO green_score (
                         job_id,
                         job_fit,
                         interview_chances,
@@ -445,7 +445,7 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                 )
                 cur.execute(
                     """
-                    UPDATE green_job_enrich
+                    UPDATE green_enrich
                     SET ranked = TRUE
                     WHERE job_id = %s
                     """,

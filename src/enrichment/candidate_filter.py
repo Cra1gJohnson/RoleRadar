@@ -100,7 +100,7 @@ def fetch_unresolved_jobs(
     """Load jobs whose candidate flag has not been classified yet."""
     query = """
         SELECT job_id, title, company_name
-        FROM greenhouse_job
+        FROM green_job
         WHERE candidate IS NULL
         ORDER BY job_id
     """
@@ -151,7 +151,7 @@ def update_candidate_flag(
     with conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE greenhouse_job
+            UPDATE green_job
             SET candidate = %s
             WHERE job_id = %s
               AND candidate IS NULL
@@ -165,7 +165,7 @@ def ensure_job_enrichment_row(conn: psycopg.Connection, job_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO green_job_enrich (job_id)
+            INSERT INTO green_enrich (job_id)
             VALUES (%s)
             ON CONFLICT (job_id) DO NOTHING
             """,
