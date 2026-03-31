@@ -28,7 +28,7 @@ INPUT_COST_PER_MILLION_TOKENS = 0.10
 OUTPUT_COST_PER_MILLION_TOKENS = 0.40
 INPUT_COST_PER_TOKEN = INPUT_COST_PER_MILLION_TOKENS / 1_000_000
 OUTPUT_COST_PER_TOKEN = OUTPUT_COST_PER_MILLION_TOKENS / 1_000_000
-PROMPT_FILE_NAME = "prompt1.md"
+PROMPT_FILE_NAME = "prompt2.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
 BATCH_SIZE = 10
 
@@ -188,10 +188,10 @@ def fetch_jobs_to_score(conn: psycopg.Connection, limit: int) -> list[JobScoreIn
         cur.execute(
             """
             SELECT
-                ghj.job_id,
-                ghj.company_name,
-                ghj.title,
-                ghj.location,
+                gj.job_id,
+                gj.company_name,
+                gj.title,
+                gj.location,
                 ge.description,
                 COALESCE(ge.min_salary, 0) AS min_salary,
                 COALESCE(ge.max_salary, 0) AS max_salary

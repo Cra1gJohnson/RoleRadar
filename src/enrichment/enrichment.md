@@ -15,6 +15,8 @@
 - `greenhouse_job_response/`: sampled individual Greenhouse job responses used as enrichment-context examples.
 - `utility/pull_ten_jobs.py`: local sampling utility for pulling ten random candidate job-detail responses.
 - `utility/error_request.py`: utility for backfilling 404 request results from `utility/errors.md`.
+- `validity_check.py`: live GET sweeper that refreshes `green_enrich.request_status` for tracked jobs.
+- `delete_404_jobs.py`: stale-job cleanup script that deletes `green_job` rows whose enrichment status is 404.
 
 ## High-Level Workflow
 
@@ -132,6 +134,22 @@
 - Updates `green_enrich.request_status = 404` for each parsed `job_id`.
 - Marks the matching `green_job.enriched = TRUE` for each parsed `job_id`.
 - Ignores non-error lines such as progress output.
+
+## validity_check.py Behavior
+
+- Reads tracked jobs from `green_enrich` joined to `green_job`.
+- Uses `token` and `greenhouse_job_id` to request the individual Greenhouse job endpoint.
+- Writes the live HTTP status code back to `green_enrich.request_status`.
+- Treats `404` as a normal validity result, not a parsing failure.
+- Leaves enrichment payload columns untouched so this script can be run as a periodic freshness sweep.
+
+## delete_404_jobs.py Behavior
+
+- Reads `green_enrich` rows with `request_status = 404`.
+- Verifies the expected cascade contract before deleting anything.
+- Deletes the parent rows from `green_job`.
+- Relies on `ON DELETE CASCADE` to remove matching rows from `green_enrich`, `green_apply`, and `green_score`.
+- Supports `--dry-run` and `--limit` for controlled cleanup.
 
 ## company_enrichment.py Behavior
 

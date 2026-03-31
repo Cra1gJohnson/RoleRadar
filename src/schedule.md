@@ -20,10 +20,15 @@ Summary:
 Tasks:  
 
 - improve snapshot validity
+- - implemented deletion script for 404 errors
+- - implemented validity check for previosly enriched jobs
+
 - improve scoring
 - improve question answering
 - implement playwright and chrome connection
+
 - add delete constraints to db
+- - added cascade constraints for child tables of green_job.
 
 ## Commit Guidelines
 

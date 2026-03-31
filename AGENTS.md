@@ -40,6 +40,7 @@
 
 ## Agent-Specific Instructions
 
+- Always attempt to keep one connection open to the db for the duration of a script. This keeps writes fast for large numbers.
 - Treat `src/scoring/enrichment_display/` as the source of truth for repeated application questions.
 - Only hardcode answers for questions repeated multiple times across that directory.
 - Do not overwrite unrelated user changes in a dirty worktree.

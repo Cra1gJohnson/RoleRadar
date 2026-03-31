@@ -19,7 +19,7 @@
 1. Read jobs from `green_job` joined to `green_enrich`.
 2. Select only rows where `green_job.enriched = TRUE` and `green_enrich.ranked IS NULL`.
 3. Format each selected row into a lean scoring JSON payload.
-4. Group jobs into batches of up to 20 rows.
+4. Group jobs into batches of up to 10 rows.
 5. Load `prompt1.md` and replace `{JOB JSON HERE}` with a `"jobs"` array containing the current batch.
 6. Send one Gemini request per batch using `google-genai` and `GEMINI_API`.
 7. Require JSON output from Gemini.
