@@ -142,6 +142,12 @@ def load_common_question_labels() -> set[str]:
         normalized_label = normalize_question_label(question.get("label"))
         if normalized_label:
             labels.add(normalized_label)
+        aliases = question.get("aliases")
+        if isinstance(aliases, list):
+            for alias in aliases:
+                normalized_alias = normalize_question_label(alias)
+                if normalized_alias:
+                    labels.add(normalized_alias)
     return labels
 
 

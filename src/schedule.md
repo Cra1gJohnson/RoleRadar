@@ -35,6 +35,12 @@ Tasks:
 - add delete constraints to db
 - - added cascade constraints for child tables of green_job.
 
+## March 31
+
+- improve playwright
+
+- apply
+
 ## Commit Guidelines
 
 Conventional Commits

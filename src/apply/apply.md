@@ -11,6 +11,7 @@
 - `order_jobs.py`: keyboard-only CLI for threshold selection and job approval.
 - `prepare_app.py`: AI-powered application-question prep for queued jobs.
 - `open_apply_jobs.py`: Playwright browser opener and form filler for queued application URLs.
+- `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
 - `green_apply_schema.py`: shared helper for creating and evolving the apply queue table.
@@ -106,6 +107,17 @@
 - Fills hardcoded common questions first using `src/apply/green_questions/common_questions.json`.
 - Fills remaining custom text questions using the parsed JSON stored in `green_apply.response`.
 - Reports missing common or custom answers in the terminal so the form can be reviewed before submission.
+- Scopes locators to the main application form and uses short timeouts to avoid long stalls on missing labels.
+- Supports registry aliases so semantically equivalent labels like `LinkedIn`, `LinkedIn URL`, and `LinkedIn Profile` resolve to the same answer.
+- Detects standard Greenhouse job-board pages by URL plus `form#application-form` before using the fast form handler.
+
+## dump_apply_html.py Behavior
+
+- Reads queued jobs from `green_apply` where `questions = TRUE`.
+- Joins `green_job` to get the live application URL.
+- Fetches the page HTML with a browser-like HTTP session.
+- Writes one UTF-8 `.txt` snapshot per job into `src/apply/green_questions/`.
+- Includes the job metadata at the top of the file so the HTML is easier to inspect.
 
 ## Revision Notes
 
