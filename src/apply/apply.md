@@ -10,7 +10,8 @@
 - `apply.md`: operating notes and queue semantics.
 - `order_jobs.py`: keyboard-only CLI for threshold selection and job approval.
 - `prepare_app.py`: AI-powered application-question prep for queued jobs.
-- `open_apply_jobs.py`: Playwright browser opener and form filler for queued application URLs.
+- `open_jobs.py`: Playwright browser opener and URL router for queued application URLs.
+- `handle_jobs.py`: simple standard Greenhouse form filler driven only by `answers.json`.
 - `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
@@ -29,7 +30,7 @@
 9. Mark `green_score.applied = TRUE` after approval so the job leaves the queue.
 10. Run `prepare_app.py` later to fill in AI answers for queued jobs where `questions = FALSE`.
 11. Store the raw AI response in `green_apply.response` and flip `green_apply.questions = TRUE` after a successful prep write.
-12. Start Chrome with `src/execute.sh`, then run `open_apply_jobs.py` to attach over CDP, open the next queued application URL, and fill the application fields.
+12. Start Chrome with `src/execute.sh`, then run `open_jobs.py` to attach over CDP, open the next queued application URL, and route it to the standard or nonstandard Playwright flow.
 
 ## Data Entities
 
@@ -97,19 +98,17 @@
 - Keep the queue table thin so additional application metadata can be added later by downstream scripts.
 - Use `green_score.applied` as the immediate queue completion flag.
 - Use `src/execute.sh` to launch Chrome with `Profile 2`, then attach Playwright to `http://127.0.0.1:9222`.
-- Fill common questions first, then custom text responses from `green_apply.response`.
+- `handle_jobs.py` now reads only `answers.json` and fills standard Greenhouse forms from the `profile` and `questions` sections.
+- `answers.json` can use `{"value": "...", "variants": [...]}` for answers that need multiple select-friendly forms, such as `United States` and `US`.
 
-## open_apply_jobs.py Behavior
+## open_jobs.py Behavior
 
 - Waits for the Chrome CDP endpoint started by `src/execute.sh`.
 - Loads queued jobs from `green_apply` where `questions = TRUE`.
 - Opens each job URL in a new tab within the existing Chrome profile.
-- Fills hardcoded common questions first using `src/apply/green_questions/common_questions.json`.
-- Fills remaining custom text questions using the parsed JSON stored in `green_apply.response`.
-- Reports missing common or custom answers in the terminal so the form can be reviewed before submission.
-- Scopes locators to the main application form and uses short timeouts to avoid long stalls on missing labels.
-- Supports registry aliases so semantically equivalent labels like `LinkedIn`, `LinkedIn URL`, and `LinkedIn Profile` resolve to the same answer.
-- Detects standard Greenhouse job-board pages by URL plus `form#application-form` before using the fast form handler.
+- Classifies URLs as `standard_greenhouse` or `nonstandard` using the job-board host.
+- Dispatches standard Greenhouse pages to one Playwright hook and nonstandard pages to another.
+- Leaves the route hooks as the integration point for the next browser automation scripts.
 
 ## dump_apply_html.py Behavior
 

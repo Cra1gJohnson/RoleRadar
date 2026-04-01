@@ -47,6 +47,16 @@ class ApplySummary:
     skipped: int = 0
     failures: int = 0
 
+@dataclass
+class ReadyApplyJob:
+    """Queued apply row ready to open in the browser."""
+
+    job_id: int
+    url: str
+    company_name: Optional[str]
+    title: Optional[str]
+
+
 
 def db_connect(autocommit: bool = True) -> psycopg.Connection:
     """Create a PostgreSQL connection using the shared env-based settings."""
