@@ -1,18 +1,11 @@
 import argparse
 import os
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-from urllib.error import URLError
+from typing import Any
 from urllib.parse import urlparse
-from urllib.request import urlopen
-
-from playwright.sync_api import sync_playwright
-from handle_jobs import handle_standard_greenhouse_job
-from handle_jobs import handle_nonstandard_job
-from order_jobs import ReadyApplyJob
+from handle_jobs import reciever
 import psycopg
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
@@ -23,168 +16,227 @@ from env_loader import load_shared_env
 
 load_shared_env()
 
-DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
 DEFAULT_LIMIT = 1
-DEFAULT_WAIT_SECONDS = 30
+
+# Browser/CDP behavior now lives in handle_jobs.
+# DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
+# DEFAULT_WAIT_SECONDS = 30
+# STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
+
 STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
+
+
+@dataclass(frozen=True)
+class JobsPackageItem:
+    """A single job payload prepared for downstream browser handling."""
+
+    job_id: int
+    title: str | None
+    url: str
+    standard_job: bool
+    response: Any
+
+
+@dataclass(frozen=True)
+class JobsPackage:
+    """The full payload passed to handle_jobs."""
+
+    jobs: list[JobsPackageItem]
 
 
 def db_connect() -> psycopg.Connection:
     """Create a PostgreSQL connection using the shared env-based settings."""
+    db_name = os.getenv("DB_NAME")
+    db_user = os.getenv("DB_USER")
+    db_password = os.getenv("DB_PASSWORD")
+    db_host = os.getenv("DB_HOST")
+    db_port = os.getenv("DB_PORT")
+
+    missing = [
+        name
+        for name, value in (
+            ("DB_NAME", db_name),
+            ("DB_USER", db_user),
+            ("DB_PASSWORD", db_password),
+            ("DB_HOST", db_host),
+            ("DB_PORT", db_port),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Cannot connect to PostgreSQL because these environment variables are missing: "
+            + ", ".join(missing)
+        )
+
     return psycopg.connect(
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
+        dbname=db_name,
+        user=db_user,
+        password=db_password,
+        host=db_host,
+        port=db_port,
         autocommit=True,
     )
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for the browser router."""
+    """Parse CLI arguments for the package builder."""
     parser = argparse.ArgumentParser(
-        description="Open queued Greenhouse application URLs in Chrome and route them by site type."
+        description="Build a jobs_package for queued Greenhouse apply rows."
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_LIMIT,
-        help="Maximum number of queued application URLs to open",
-    )
-    parser.add_argument(
-        "--cdp-endpoint",
-        default=DEFAULT_CDP_ENDPOINT,
-        help="Chrome remote debugging endpoint started by src/execute.sh",
-    )
-    parser.add_argument(
-        "--wait-seconds",
-        type=int,
-        default=DEFAULT_WAIT_SECONDS,
-        help="Maximum number of seconds to wait for the Chrome CDP endpoint",
+        help="Maximum number of queued jobs to package",
     )
     return parser.parse_args()
 
 
+def normalize_prompt_text(value: Any) -> str:
+    """Return a compact prompt-safe string."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split()).strip()
+
+
+def normalize_hostname(url: str) -> str:
+    """Return a normalized hostname for standard-board checks."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().strip()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return hostname
+
+
 def is_standard_greenhouse_url(url: str) -> bool:
     """Return True when the URL points at a standard Greenhouse job board."""
-    parsed = urlparse(url)
-    return parsed.netloc.lower() in STANDARD_GREENHOUSE_DOMAINS
+    return normalize_hostname(url) in STANDARD_GREENHOUSE_DOMAINS
 
 
-def route_name_for_url(url: str) -> str:
-    """Classify the URL into the standard or nonstandard Playwright route."""
-    return "standard_greenhouse" if is_standard_greenhouse_url(url) else "nonstandard"
+def validate_url(job_id: int, url: Any) -> str:
+    """Validate the job URL and return a normalized string."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"job_id={job_id} has an empty or missing url")
+
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"job_id={job_id} has an invalid url scheme: {url!r}. Expected http or https."
+        )
+    if not parsed.hostname:
+        raise ValueError(
+            f"job_id={job_id} has an invalid url without a hostname: {url!r}"
+        )
+
+    return url.strip()
 
 
-def fetch_ready_jobs(conn: psycopg.Connection, limit: int) -> list[ReadyApplyJob]:
-    """Load queued jobs that still need browser automation."""
+def validate_job_row(row: Any, row_index: int) -> JobsPackageItem:
+    """Convert one database row into a validated package item."""
+    if not isinstance(row, tuple) or len(row) < 4:
+        raise ValueError(
+            f"Row {row_index} from the package query did not return the expected shape "
+            f"(job_id, title, url, response). Got: {row!r}"
+        )
+
+    job_id, title, url, response = row[:4]
+
+    if not isinstance(job_id, int) or job_id <= 0:
+        raise ValueError(
+            f"Row {row_index} returned an invalid job_id: {job_id!r}"
+        )
+
+    normalized_title = normalize_prompt_text(title)
+    validated_url = validate_url(job_id, url)
+    standard_job = is_standard_greenhouse_url(validated_url)
+
+    return JobsPackageItem(
+        job_id=job_id,
+        title=normalized_title or None,
+        url=validated_url,
+        standard_job=standard_job,
+        response=response,
+    )
+
+
+def fetch_jobs_package(conn: psycopg.Connection, limit: int) -> JobsPackage:
+    """Load queued jobs and package only the fields needed by handle_jobs."""
+    if limit <= 0:
+        raise ValueError("limit must be greater than 0")
+
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT
-                gj.job_id,
+                ga.job_id,
+                gj.title,
                 gj.url,
-                gj.company_name,
-                gj.title
+                ga.response
             FROM green_apply AS ga
             JOIN green_job AS gj
               ON gj.job_id = ga.job_id
-            JOIN green_score AS gs
-              ON gs.job_id = ga.job_id
             WHERE ga.questions IS TRUE
-              AND gj.url IS NOT NULL
-            ORDER BY gs.overall DESC, ga.job_id ASC
+            AND ga.submitted_at IS NULL
+            ORDER BY ga.job_id ASC
             LIMIT %s
             """,
             (limit,),
         )
         rows = cur.fetchall()
 
-    return [
-        ReadyApplyJob(
-            job_id=row[0],
-            url=row[1],
-            company_name=row[2],
-            title=row[3],
-        )
-        for row in rows
-    ]
-
-
-def wait_for_cdp_endpoint(endpoint: str, wait_seconds: int) -> None:
-    """Wait for the Chrome remote debugging endpoint to become available."""
-    deadline = time.monotonic() + wait_seconds
-    version_url = f"{endpoint.rstrip('/')}/json/version"
-
-    while True:
+    jobs: list[JobsPackageItem] = []
+    for row_index, row in enumerate(rows, start=1):
         try:
-            with urlopen(version_url, timeout=1) as response:
-                if response.status == 200:
-                    return
-        except (URLError, TimeoutError, OSError):
-            pass
-
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"Chrome CDP endpoint was not reachable at {version_url} within {wait_seconds} seconds"
-            )
-        time.sleep(1)
-
-def route_job(page: object, job: ReadyApplyJob) -> None:
-    """Dispatch one opened page to the appropriate Playwright route."""
-    if route_name_for_url(job.url) == "standard_greenhouse":
-        handle_standard_greenhouse_job(page, job)
-    else:
-        handle_nonstandard_job(page, job)
-
-
-def open_job_urls(endpoint: str, jobs: list[ReadyApplyJob]) -> None:
-    """Attach to Chrome over CDP, open each queued job URL, and classify it."""
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp(endpoint)
-        if not browser.contexts:
+            jobs.append(validate_job_row(row, row_index))
+        except Exception as exc:
             raise RuntimeError(
-                "Chrome exposed no browser contexts over CDP. Start src/execute.sh first."
-            )
+                f"Failed to build jobs_package from row {row_index}: {exc}"
+            ) from exc
 
-        context = browser.contexts[0]
-        for job in jobs:
-            page = context.new_page()
-            page.goto(job.url, wait_until="domcontentloaded")
-            page.bring_to_front()
-
-            route = route_name_for_url(job.url)
-            print(
-                f"opened job_id={job.job_id} route={route} url={job.url}"
-            )
-            route_job(page, job)
+    return JobsPackage(jobs=jobs)
 
 
 def main() -> None:
-    """CLI entrypoint for opening queued apply URLs and routing them by site type."""
+    """CLI entrypoint for building the jobs_package."""
     args = parse_args()
-    if args.limit <= 0:
-        print("limit must be greater than 0")
-        raise SystemExit(1)
-    if args.wait_seconds <= 0:
-        print("wait-seconds must be greater than 0")
-        raise SystemExit(1)
 
     try:
-        wait_for_cdp_endpoint(args.cdp_endpoint, args.wait_seconds)
         with db_connect() as conn:
-            jobs = fetch_ready_jobs(conn, args.limit)
+            jobs_package = fetch_jobs_package(conn, args.limit)
+            if not jobs_package.jobs:
+                print("No queued jobs with questions = TRUE were found")
+                return
 
-        if not jobs:
-            print("No queued jobs with questions = TRUE were found")
-            return
+            for job in jobs_package.jobs:
+                reciever(JobsPackage(jobs=[job]))
+                print()
+                print(f"job_id={job.job_id}")
+                print(f"title={job.title or 'N/A'}")
+                print(f"url={job.url}")
 
-        open_job_urls(args.cdp_endpoint, jobs)
-    except (OSError, TimeoutError, ValueError, psycopg.Error, RuntimeError) as exc:
+                while True:
+                    submitted = input("Was the job submitted? [y/n]: ").strip().lower()
+                    if submitted in {"y", "n"}:
+                        break
+                    print("Enter y or n.")
+
+                if submitted == "y":
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE green_apply
+                            SET submitted_at = NOW()
+                            WHERE job_id = %s
+                            """,
+                            (job.job_id,),
+                        )
+                    print(f"job_id={job.job_id} marked submitted")
+    except (OSError, ValueError, psycopg.Error, RuntimeError) as exc:
         print(str(exc))
         raise SystemExit(1) from exc
+
+    print("playwright success")
 
 
 if __name__ == "__main__":

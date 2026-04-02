@@ -11,7 +11,7 @@
 - `order_jobs.py`: keyboard-only CLI for threshold selection and job approval.
 - `prepare_app.py`: AI-powered application-question prep for queued jobs.
 - `open_jobs.py`: Playwright browser opener and URL router for queued application URLs.
-- `handle_jobs.py`: simple standard Greenhouse form filler driven only by `answers.json`.
+- `handle_jobs.py`: Playwright browser runner that consumes the `open_jobs.py` package JSON and fills standard Greenhouse forms.
 - `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
@@ -60,6 +60,7 @@
     - foreign key to `green_job.job_id`
     - `questions` boolean completion flag for application-question prep
     - `response` raw AI response text for application-question answers
+    - `submitted_at` timestamp set after the browser flow is confirmed complete
 
 ## Operational Rules
 
@@ -68,6 +69,7 @@
 - The join aliases should remain `gj`, `ge`, and `gs` for readability and consistency.
 - Approved jobs must be written to `green_apply` and marked `green_score.applied = TRUE` in the same transaction.
 - Application-question preparation must store the AI response in `green_apply.response` and set `green_apply.questions = TRUE` only after a successful write.
+- After `handle_jobs.py` finishes a job, `open_jobs.py` should prompt for `y/n` confirmation and set `green_apply.submitted_at` only on `y`.
 - The tool should be usable from the terminal without a mouse.
 - URLs should be displayed as terminal hyperlinks when the terminal supports it, with plain-text fallback otherwise.
 
@@ -83,12 +85,15 @@
 
 ## prepare_app.py Behavior
 
-- Reads jobs from `green_apply` where `questions = FALSE`.
+- Supports `--test`, `--full`, `--limit`, and `--redo` modes from the CLI.
+- `--test` prepares the first queued job where `green_apply.questions = FALSE`.
+- `--full` prepares all queued jobs where `green_apply.questions = FALSE`.
+- `--limit` only applies to `--full` and caps how many queued jobs are processed.
+- `--redo` prepares every row in `green_apply`, regardless of the current `questions` flag.
 - Joins `green_job`, `green_enrich`, and `green_score` for application context.
 - Loads `prompt1.txt` and injects one job at a time.
-- Filters out repeated common questions from `src/apply/green_questions/common_questions.json`.
-- Keeps only free-text fields such as `input_text` and `textarea` for the AI request.
-- Sends the reduced prompt to the AI API and stores the raw response in `green_apply.response`.
+- Filters out trivial questions using the labels found in `src/scoring/enrichment_display/`.
+- Sends the remaining non-trivial questions to the AI API and stores the raw response in `green_apply.response`.
 - Sets `green_apply.questions = TRUE` after a successful response write.
 - Leaves failed jobs eligible for retry by keeping `questions = FALSE`.
 
@@ -98,16 +103,19 @@
 - Keep the queue table thin so additional application metadata can be added later by downstream scripts.
 - Use `green_score.applied` as the immediate queue completion flag.
 - Use `src/execute.sh` to launch Chrome with `Profile 2`, then attach Playwright to `http://127.0.0.1:9222`.
-- `handle_jobs.py` now reads only `answers.json` and fills standard Greenhouse forms from the `profile` and `questions` sections.
+- `handle_jobs.py` reads the jobs package from `stdin`, connects over CDP, and fills standard Greenhouse forms from `answers.json` plus the stored AI response.
 - `answers.json` can use `{"value": "...", "variants": [...]}` for answers that need multiple select-friendly forms, such as `United States` and `US`.
+- `open_jobs.py` emits the JSON jobs package that `handle_jobs.py` consumes.
 
 ## open_jobs.py Behavior
 
 - Waits for the Chrome CDP endpoint started by `src/execute.sh`.
 - Loads queued jobs from `green_apply` where `questions = TRUE`.
-- Opens each job URL in a new tab within the existing Chrome profile.
+- Opens each job URL in the existing Chrome profile.
 - Classifies URLs as `standard_greenhouse` or `nonstandard` using the job-board host.
 - Dispatches standard Greenhouse pages to one Playwright hook and nonstandard pages to another.
+- Prints the job title, job_id, and URL after the browser handling step.
+- Prompts `y/n` for each job in order and sets `green_apply.submitted_at` only when the user confirms submission.
 - Leaves the route hooks as the integration point for the next browser automation scripts.
 
 ## dump_apply_html.py Behavior

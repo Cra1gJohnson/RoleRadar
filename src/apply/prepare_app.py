@@ -25,8 +25,45 @@ DEFAULT_RATE_PER_MINUTE = 12
 MODEL_NAME = "gemini-2.5-flash-lite"
 PROMPT_FILE_NAME = "prompt1.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
-COMMON_QUESTIONS_PATH = Path(__file__).resolve().parent / "green_questions" / "common_questions.json"
-TEXT_ENTRY_FIELD_TYPES = {"input_text", "textarea"}
+ENRICHMENT_DISPLAY_DIR = SRC_ROOT / "scoring" / "enrichment_display"
+
+SOURCE_TRIVIAL_QUESTION_LABELS = {
+    "first name",
+    "last name",
+    "preferred first name",
+    "please enter your preferred last name/surname (only enter your preferred last name/surname)",
+    "email",
+    "phone",
+    "linkedin profile",
+    "website",
+    "resume/cv",
+    "cover letter",
+    "gender",
+    "race",
+    "do you have a high school diploma, or have you successfully passed a high school equivalency exam such as the ged?",
+    "veteranstatus",
+    "disabilitystatus",
+}
+
+REQUESTED_TRIVIAL_QUESTION_LABELS = {
+    "linked in profile",
+    "linkedin",
+    "linkedin url",
+    "country code",
+    "phone number",
+    "resume",
+    "school",
+    "degree",
+    "discipline",
+    "veteran status",
+    "veteran",
+    "disability status",
+    "disabled",
+    "are you hispanic?",
+    "hispanic",
+    "are you a veteran?",
+    "are you disabled?",
+}
 
 
 @dataclass
@@ -101,9 +138,24 @@ def parse_args() -> argparse.Namespace:
         description="Prepare AI answers for queued Greenhouse applications."
     )
     parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Prepare only the first queued job with questions = FALSE",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Prepare all queued jobs with questions = FALSE",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
-        help="Optional maximum number of queued jobs to prepare",
+        help="Optional maximum number of jobs to prepare during a full run",
+    )
+    parser.add_argument(
+        "--redo",
+        action="store_true",
+        help="Prepare every queued job again, regardless of questions completion state",
     )
     parser.add_argument(
         "--rate-per-minute",
@@ -127,68 +179,51 @@ def normalize_question_label(label: Any) -> str:
 
 
 @lru_cache(maxsize=1)
-def load_common_question_labels() -> set[str]:
-    """Load the common-question registry used to suppress repeated prompts."""
-    raw_text = COMMON_QUESTIONS_PATH.read_text(encoding="utf-8")
-    payload = json.loads(raw_text)
-    questions = payload.get("questions", [])
-    if not isinstance(questions, list):
-        return set()
+def load_trivial_question_labels() -> set[str]:
+    """Load the labels that should be removed before sending questions to Gemini."""
+    labels = set(REQUESTED_TRIVIAL_QUESTION_LABELS)
+    discovered_labels: set[str] = set()
 
-    labels: set[str] = set()
-    for question in questions:
-        if not isinstance(question, dict):
+    if not ENRICHMENT_DISPLAY_DIR.exists():
+        return labels | SOURCE_TRIVIAL_QUESTION_LABELS
+
+    for path in ENRICHMENT_DISPLAY_DIR.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
             continue
-        normalized_label = normalize_question_label(question.get("label"))
-        if normalized_label:
-            labels.add(normalized_label)
-        aliases = question.get("aliases")
-        if isinstance(aliases, list):
-            for alias in aliases:
-                normalized_alias = normalize_question_label(alias)
-                if normalized_alias:
-                    labels.add(normalized_alias)
-    return labels
 
+        questions = payload.get("application_questions", [])
+        if not isinstance(questions, list):
+            continue
 
-def question_is_text_only(question: Any) -> bool:
-    """Return True when every field in a question is a free-text entry field."""
-    if not isinstance(question, dict):
-        return False
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            normalized_label = normalize_question_label(question.get("label"))
+            if normalized_label in SOURCE_TRIVIAL_QUESTION_LABELS:
+                discovered_labels.add(normalized_label)
 
-    fields = question.get("fields")
-    if not isinstance(fields, list) or not fields:
-        return False
-
-    seen_text_field = False
-    for field in fields:
-        if not isinstance(field, dict):
-            return False
-        field_type = field.get("type")
-        if field_type not in TEXT_ENTRY_FIELD_TYPES:
-            return False
-        seen_text_field = True
-
-    return seen_text_field
+    return labels | SOURCE_TRIVIAL_QUESTION_LABELS | discovered_labels
 
 
 def filter_application_questions(application_questions: Any) -> list[dict[str, Any]]:
-    """Keep only free-text questions that are not in the common-question registry."""
+    """Keep only non-trivial questions for Gemini to answer."""
     if not isinstance(application_questions, list):
         return []
 
-    common_question_labels = load_common_question_labels()
+    trivial_question_labels = load_trivial_question_labels()
     filtered_questions: list[dict[str, Any]] = []
 
     for question in application_questions:
-        if not question_is_text_only(question):
+        if not isinstance(question, dict):
             continue
 
         normalized_label = normalize_question_label(question.get("label"))
         if not normalized_label:
             continue
 
-        if normalized_label in common_question_labels:
+        if normalized_label in trivial_question_labels:
             continue
 
         filtered_questions.append(question)
@@ -198,9 +233,14 @@ def filter_application_questions(application_questions: Any) -> list[dict[str, A
 
 def fetch_jobs_to_prepare(
     conn: psycopg.Connection,
+    mode: str,
     limit: Optional[int],
 ) -> list[ApplicationPrepJob]:
     """Load queued jobs that still need application-question preparation."""
+    questions_clause = ""
+    if mode in {"test", "full"}:
+        questions_clause = "WHERE ga.questions IS FALSE"
+
     query = """
         SELECT
             gj.job_id,
@@ -220,11 +260,14 @@ def fetch_jobs_to_prepare(
           ON ge.job_id = ga.job_id
         JOIN green_score AS gs
           ON gs.job_id = ga.job_id
-        WHERE ga.questions IS FALSE
+        {questions_clause}
         ORDER BY gs.overall DESC, ga.job_id ASC
-    """
+    """.format(questions_clause=questions_clause)
+
     params: list[Any] = []
-    if limit is not None:
+    if mode == "test":
+        query += " LIMIT 1"
+    elif mode == "full" and limit is not None:
         query += " LIMIT %s"
         params.append(limit)
 
@@ -300,7 +343,7 @@ def request_ai_response(client: genai.Client, prompt: str) -> str:
 
 
 def build_empty_response(job_id: int) -> str:
-    """Create a deterministic empty-answer response when no free-text prompts remain."""
+    """Create a deterministic empty-answer response when no non-trivial prompts remain."""
     return json.dumps(
         {
             "job_id": job_id,
@@ -327,27 +370,40 @@ def parse_ai_response(response_text: str, expected_job_id: int) -> dict[str, Any
     return payload
 
 
-def persist_response(job_id: int, response_text: str, questions_done: bool) -> None:
+def persist_response(
+    conn: psycopg.Connection,
+    job_id: int,
+    response_text: str,
+    questions_done: bool,
+) -> None:
     """Store the raw response and optionally mark the job as prepared."""
-    with db_connect(autocommit=False) as conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE green_apply
-                    SET response = %s,
-                        questions = %s
-                    WHERE job_id = %s
-                    """,
-                    (response_text, questions_done, job_id),
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE green_apply
+            SET response = %s,
+                questions = %s
+            WHERE job_id = %s
+            """,
+            (response_text, questions_done, job_id),
+        )
 
 
-def prepare_applications(limit: Optional[int], rate_per_minute: int) -> PrepSummary:
+def count_jobs_to_prepare(conn: psycopg.Connection, mode: str) -> int:
+    """Count the queued jobs eligible for the selected mode."""
+    if mode == "redo":
+        query = "SELECT COUNT(*) FROM green_apply AS ga"
+    else:
+        query = "SELECT COUNT(*) FROM green_apply AS ga WHERE ga.questions IS FALSE"
+
+    with conn.cursor() as cur:
+        cur.execute(query)
+        row = cur.fetchone()
+
+    return int(row[0]) if row else 0
+
+
+def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) -> PrepSummary:
     """Prepare queued applications with AI-generated answers."""
     prompt_template = load_prompt_template()
     client = build_client()
@@ -355,67 +411,67 @@ def prepare_applications(limit: Optional[int], rate_per_minute: int) -> PrepSumm
     summary = PrepSummary()
 
     with db_connect() as conn:
-        jobs = fetch_jobs_to_prepare(conn, limit)
+        summary.available = count_jobs_to_prepare(conn, mode)
+        jobs = fetch_jobs_to_prepare(conn, mode, limit)
+        summary.selected = len(jobs)
+        if not jobs:
+            print("No queued jobs need application prep")
+            return summary
 
-    summary.selected = len(jobs)
-    if not jobs:
-        print("No queued jobs need application prep")
-        return summary
+        print(
+            f"mode={mode} selected={len(jobs)} limit={'all' if limit is None else limit} "
+            f"rate_per_minute={rate_per_minute} model={MODEL_NAME}"
+        )
 
-    print(
-        f"selected={len(jobs)} limit={'all' if limit is None else limit} "
-        f"rate_per_minute={rate_per_minute} model={MODEL_NAME}"
-    )
+        for job in jobs:
+            job_payload = build_job_payload(job)
+            filtered_questions = job_payload["application_questions"]
 
-    for job in jobs:
-        job_payload = build_job_payload(job)
-        filtered_questions = job_payload["application_questions"]
+            if not filtered_questions:
+                empty_response = build_empty_response(job.job_id)
+                try:
+                    persist_response(conn, job.job_id, empty_response, True)
+                except psycopg.Error as exc:
+                    print(f"job_id={job.job_id} database failed: {exc}")
+                    summary.database_failures += 1
+                    continue
 
-        if not filtered_questions:
-            empty_response = build_empty_response(job.job_id)
+                summary.prepared += 1
+                print(f"job_id={job.job_id} prepared (no non-trivial questions)")
+                continue
+
+            prompt = render_prompt(prompt_template, job_payload)
+
             try:
-                persist_response(job.job_id, empty_response, True)
+                rate_limiter.acquire()
+                response_text = request_ai_response(client, prompt)
+            except Exception as exc:
+                print(f"job_id={job.job_id} api failed: {exc}")
+                summary.api_failures += 1
+                continue
+
+            try:
+                parse_ai_response(response_text, job.job_id)
+            except Exception as exc:
+                print(f"job_id={job.job_id} parse failed: {exc}")
+                try:
+                    persist_response(conn, job.job_id, response_text, False)
+                except psycopg.Error as db_exc:
+                    print(f"job_id={job.job_id} database failed: {db_exc}")
+                    summary.database_failures += 1
+                    continue
+                summary.parse_failures += 1
+                continue
+
+            try:
+                persist_response(conn, job.job_id, response_text, True)
             except psycopg.Error as exc:
                 print(f"job_id={job.job_id} database failed: {exc}")
                 summary.database_failures += 1
                 continue
 
             summary.prepared += 1
-            print(f"job_id={job.job_id} prepared (no free-text questions)")
-            continue
-
-        prompt = render_prompt(prompt_template, job_payload)
-
-        try:
-            rate_limiter.acquire()
-            response_text = request_ai_response(client, prompt)
-        except Exception as exc:
-            print(f"job_id={job.job_id} api failed: {exc}")
-            summary.api_failures += 1
-            continue
-
-        try:
-            parse_ai_response(response_text, job.job_id)
-        except Exception as exc:
-            print(f"job_id={job.job_id} parse failed: {exc}")
-            try:
-                persist_response(job.job_id, response_text, False)
-            except psycopg.Error as db_exc:
-                print(f"job_id={job.job_id} database failed: {db_exc}")
-                summary.database_failures += 1
-                continue
-            summary.parse_failures += 1
-            continue
-
-        try:
-            persist_response(job.job_id, response_text, True)
-        except psycopg.Error as exc:
-            print(f"job_id={job.job_id} database failed: {exc}")
-            summary.database_failures += 1
-            continue
-
-        summary.prepared += 1
-        print(f"job_id={job.job_id} prepared")
+            print(f"job_id={job.job_id} prepared")
 
     return summary
 
@@ -423,15 +479,30 @@ def prepare_applications(limit: Optional[int], rate_per_minute: int) -> PrepSumm
 def main() -> None:
     """CLI entrypoint for application preparation."""
     args = parse_args()
+    mode_flags = [args.test, args.full, args.redo]
+    if sum(1 for flag in mode_flags if flag) > 1:
+        print("Choose only one of --test, --full, or --redo")
+        raise SystemExit(1)
     if args.limit is not None and args.limit <= 0:
         print("limit must be greater than 0")
+        raise SystemExit(1)
+    if args.limit is not None and not args.full:
+        print("--limit can only be used with --full")
         raise SystemExit(1)
     if args.rate_per_minute <= 0:
         print("rate-per-minute must be greater than 0")
         raise SystemExit(1)
 
+    if args.test:
+        mode = "test"
+    elif args.redo:
+        mode = "redo"
+    else:
+        mode = "full"
+
     try:
         summary = prepare_applications(
+            mode=mode,
             limit=resolve_limit(args.limit),
             rate_per_minute=args.rate_per_minute,
         )
