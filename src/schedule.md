@@ -38,8 +38,19 @@ Tasks:
 ## March 31
 
 - improve playwright
+- - mild improvements to playwright made
 
-- apply
+## April 1
+
+- improve playwright
+- - changes in the way application is prepared and how scripts in apply/ interact
+- - large improvements to actual playwrite functionality
+- - first application sent !!!
+
+## April 2
+
+- brainstorm how to make playwright fill script more multi purpose
+- - using locator.count to detect fields
 
 ## Commit Guidelines
 

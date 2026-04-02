@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError
+
+
 
 ANSWERS_PATH = Path(__file__).resolve().parent / "answers.json"
 STANDARD_FORM_SELECTOR = "form#application-form"
@@ -817,6 +819,25 @@ class JobsPackage:
 
 #     return False
 
+# def find_count(locator, value, name="field", timeout=2000) -> int:
+#     try:
+#         count = locator.count()
+#         if count == 0:
+#             print(f"Skip: {name} not on page") 
+#         return count
+#         # locator.first.wait_for(state="visible", timeout=timeout)
+#         # locator.first.click()
+#         # locator.first.fill(value)
+
+#     except TimeoutError:
+#         print(f"Skip: {name} found but not ready in time")
+#         return -1
+
+#     except Exception as e:
+#         print(f"Skip: {name} failed: {e}")
+#         return -1
+
+
 
 def handle_standard(job: JobsPackageItem) -> None:
     """Fill a standard Greenhouse application form. currently a placeholder"""
@@ -846,27 +867,51 @@ def handle_standard(job: JobsPackageItem) -> None:
 
         # location
         try: 
-
-            locate = page.get_by_role("button", name="Locate me")
-            locate.click()
-            page.set_default_timeout(2500)
-            page.locator("body").click()
+            if page.locator("div", has_text="Locate me").count() > 0:
+                locate = page.get_by_role("button", name="Locate me")
+                locate.click()
+                page.set_default_timeout(2500)
+                page.locator("body").click()
+            else :
+                pass
         except Exception as exce:
-            pass
+            print(f"no locate me button {exce}")
 
         # Linked In
         page.get_by_role("textbox", name="LinkedIn Profile").fill("https://www.linkedin.com/in/craig-p-johnson/")
 
-        # Gender disability verteran
-        page.get_by_text("GenderSelect...").click()
-        page.get_by_role("option", name="Male", exact=True).click()
-        page.get_by_role("combobox", name= "Are you Hispanic/Latino?").click()
-        page.get_by_role("option", name="Yes").click()
+        # Website
+        page.get_by_role("textbox", name= "Website").fill("https://www.cpjserve.com")
+
+        # Gender
+        try: 
+            if page.locator("div", has_text="GenderSelect...").count() > 0:
+                page.get_by_text("GenderSelect...").click()
+                page.get_by_role("option", name="Male", exact=True).click()
+        except Exception as exce:
+            print(f"no gender {exce}")
+        # hispanic
+        try: 
+            if page.locator("div", has_text="Are you Hispanic/Latino?").count() > 0:            
+                page.get_by_role("combobox", name= "Are you Hispanic/Latino?").click()
+                page.get_by_role("option", name="Yes").click()
+        except Exception as exce:
+            print(f"no hispanic {exce}")
+        # veteran
+        try: 
+            if page.locator("div", has_text="Veteran StatusSelect...").count() > 0:
+                page.get_by_text("Veteran StatusSelect...").click()
+                page.get_by_role("option", name="I am not a protected veteran").click()
+        except Exception as exce:
+            print(f"no gender {exce}")
+        # disability
+        try: 
+            if page.locator("div", has_text="Disability StatusSelect...").count() > 0:
+                page.get_by_text("Disability StatusSelect...").click()
+                page.get_by_role("option", name="No, I do not have a").click()
+        except Exception as exce:
+            print(f"no gender {exce}")
         
-        page.get_by_text("Veteran StatusSelect...").click()
-        page.get_by_role("option", name="I am not a protected veteran").click()
-        page.get_by_text("Disability StatusSelect...").click()
-        page.get_by_role("option", name="No, I do not have a").click()
         
 
         response = json.loads(job.response)
@@ -877,7 +922,9 @@ def handle_standard(job: JobsPackageItem) -> None:
                 else :
                     # this will probably fuck me later
                     pass
-                page.get_by_role("option", name=answer["answer label"]).click()
+                # make sure there actually is an answer
+                if answer["answer label"] != "" :
+                    page.get_by_role("option", name=answer["answer label"]).click()
             except Exception as exec:
                 print(f"yeah, ;-( it was {answer["question label"]} and {exec}")
 
