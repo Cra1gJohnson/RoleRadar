@@ -52,6 +52,21 @@ Tasks:
 - brainstorm how to make playwright fill script more multi purpose
 - - using locator.count to detect fields
 
+## April 4th
+
+- coninue work on application preparation filling,
+- - more playwright research
+
+## April 6th
+
+- continue playwright improvement
+
+## April 7th
+
+- finalize playwright improvement
+- - begin application snapshot
+- - begin further discovery and snapshot updates
+
 ## Commit Guidelines
 
 Conventional Commits
