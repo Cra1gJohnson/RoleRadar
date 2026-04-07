@@ -4,7 +4,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+
+import requests
+
 from handle_jobs import reciever
 import psycopg
 
@@ -24,6 +27,15 @@ DEFAULT_LIMIT = 1
 # STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
 
 STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
+GREENHOUSE_URL_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 @dataclass(frozen=True)
@@ -176,8 +188,11 @@ def fetch_jobs_package(conn: psycopg.Connection, limit: int) -> JobsPackage:
             FROM green_apply AS ga
             JOIN green_job AS gj
               ON gj.job_id = ga.job_id
+            JOIN green_enrich AS ge
+              ON ge.job_id = ga.job_id
             WHERE ga.questions IS TRUE
             AND ga.submitted_at IS NULL
+            AND ge.request_status = 200
             ORDER BY ga.job_id ASC
             LIMIT %s
             """,
@@ -197,6 +212,37 @@ def fetch_jobs_package(conn: psycopg.Connection, limit: int) -> JobsPackage:
     return JobsPackage(jobs=jobs)
 
 
+def probe_url_status(url: str) -> int:
+    """Check whether a job URL still resolves, returning the HTTP status code."""
+    response = requests.get(
+        url,
+        headers=GREENHOUSE_URL_HEADERS,
+        timeout=30,
+        allow_redirects=True,
+    )
+    final_url = response.url
+    final_query = parse_qs(urlparse(final_url).query)
+
+    if response.status_code == 200 and final_query.get("error") == ["true"]:
+        return 404
+
+
+    return int(response.status_code)
+
+
+def mark_job_request_status(conn: psycopg.Connection, job_id: int, request_status: int) -> None:
+    """Persist a non-200 result in green_enrich so the job is skipped next time."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE green_enrich
+            SET request_status = %s
+            WHERE job_id = %s
+            """,
+            (request_status, job_id),
+        )
+
+
 def main() -> None:
     """CLI entrypoint for building the jobs_package."""
     args = parse_args()
@@ -209,6 +255,20 @@ def main() -> None:
                 return
 
             for job in jobs_package.jobs:
+                try:
+                    request_status = probe_url_status(job.url)
+                except requests.RequestException as exc:
+                    print(f"job_id={job.job_id} url check failed: {exc}")
+                    continue
+
+                if request_status != 200:
+                    mark_job_request_status(conn, job.job_id, request_status)
+                    print(
+                        f"job_id={job.job_id} url returned {request_status}; "
+                        "marked green_enrich.request_status"
+                    )
+                    continue
+
                 reciever(JobsPackage(jobs=[job]))
                 print()
                 print(f"job_id={job.job_id}")
