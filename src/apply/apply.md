@@ -111,9 +111,11 @@
 
 - Waits for the Chrome CDP endpoint started by `src/execute.sh`.
 - Loads queued jobs from `green_apply` where `questions = TRUE`.
+- Excludes rows whose `green_enrich.request_status = 404`.
 - Opens each job URL in the existing Chrome profile.
 - Classifies URLs as `standard_greenhouse` or `nonstandard` using the job-board host.
 - Dispatches standard Greenhouse pages to one Playwright hook and nonstandard pages to another.
+- Probes each URL before handing it to `handle_jobs.py`; on any non-`200` status, writes that status back to `green_enrich.request_status` and skips the job.
 - Prints the job title, job_id, and URL after the browser handling step.
 - Prompts `y/n` for each job in order and sets `green_apply.submitted_at` only when the user confirms submission.
 - Leaves the route hooks as the integration point for the next browser automation scripts.
