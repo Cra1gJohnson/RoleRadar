@@ -17,7 +17,7 @@
 ## High-Level Workflow
 
 1. Read jobs from `green_job` joined to `green_enrich`.
-2. Select only rows where `green_job.enriched = TRUE` and `green_enrich.ranked IS NULL`.
+2. Select only rows where `green_job.enriched = TRUE` and `green_enrich.scored IS NULL`.
 3. Format each selected row into a lean scoring JSON payload.
 4. Group jobs into batches of up to 10 rows.
 5. Load `prompt1.md` and replace `{JOB JSON HERE}` with a `"jobs"` array containing the current batch.
@@ -27,7 +27,7 @@
 9. Compute `overall` from the four subscores.
 10. Sort the scored batch before persistence.
 11. Upsert each result into `green_score`.
-12. Mark `green_enrich.ranked = TRUE` after a successful rank write.
+12. Mark `green_enrich.scored = TRUE` and set `green_score.scored_at` after a successful score write.
 
 ## Data Entities
 
@@ -47,7 +47,8 @@
     - `min_salary`
     - `max_salary`
     - `application_questions`
-    - `ranked`
+    - `scored`
+    - `scored_at`
 - `green_score`
   - Output table for scoring results.
   - Relevant fields:
@@ -57,7 +58,6 @@
     - `compensation`
     - `location`
     - `overall`
-    - `ranked_at`
     - `prompt`
     - `model`
     - `response`
@@ -76,8 +76,8 @@
 - `green_score.response` stores the full raw JSON text returned by Gemini.
 - Individual score fields are stored on a `0-100` scale.
 - `overall` is computed from the weighted formula currently implemented in `score_job.py`.
-- Scoring only marks `green_enrich.ranked = TRUE` after a successful DB write to `green_score`.
-- Failed API, parse, or database operations leave `green_enrich.ranked` unchanged so the job can be retried later.
+- Scoring only marks `green_enrich.scored = TRUE` and sets `green_score.scored_at` after a successful DB write to `green_score`.
+- Failed API, parse, or database operations leave `green_enrich.scored` unchanged so the job can be retried later.
 
 ## score_job.py Behavior
 
@@ -92,7 +92,7 @@
 - Requires JSON-only model output.
 - Validates that the returned scoring fields exist and are integer scores from `0` to `100`.
 - Stores the full Gemini JSON response alongside the normalized score columns.
-- Upserts each scored row and then marks the enrichment row as ranked.
+- Upserts each scored row and then marks the enrichment row as scored.
 - Tracks prompt, output, and total token counts when Gemini returns usage metadata.
 - Prints concise per-job and final summaries.
 

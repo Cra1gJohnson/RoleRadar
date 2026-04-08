@@ -73,7 +73,7 @@ def db_connect(autocommit: bool = True) -> psycopg.Connection:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the apply queue tool."""
     parser = argparse.ArgumentParser(
-        description="Review ranked Greenhouse jobs and queue approved jobs for application."
+        description="Review scored Greenhouse jobs and queue approved jobs for application."
     )
     return parser.parse_args()
 
@@ -97,7 +97,7 @@ def prompt_for_threshold() -> int:
 
 
 def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
-    """Count un-applied ranked jobs at or above the selected score threshold."""
+    """Count un-applied scored jobs at or above the selected score threshold."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -117,7 +117,7 @@ def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
 
 
 def fetch_jobs(conn: psycopg.Connection, threshold: int) -> list[ApplyJob]:
-    """Load ranked jobs ready for review."""
+    """Load scored jobs ready for review."""
     with conn.cursor() as cur:
         cur.execute(
             """

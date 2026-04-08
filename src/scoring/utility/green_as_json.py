@@ -19,7 +19,7 @@ load_shared_env()
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for exporting ranked job inputs as JSON."""
+    """Parse CLI arguments for exporting scored job inputs as JSON."""
     parser = argparse.ArgumentParser(
         description=(
             "Join green_job and green_enrich and export scoring-ready job JSON."

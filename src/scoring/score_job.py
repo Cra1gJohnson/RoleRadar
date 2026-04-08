@@ -81,7 +81,7 @@ class RunSummary:
     """Track the aggregate outcome of one scoring run."""
 
     selected: int = 0
-    ranked: int = 0
+    scored: int = 0
     api_failures: int = 0
     parse_failures: int = 0
     database_failures: int = 0
@@ -183,7 +183,7 @@ def chunk_jobs(jobs: list[JobScoreInput], batch_size: int) -> list[list[JobScore
 
 
 def fetch_jobs_to_score(conn: psycopg.Connection, limit: int) -> list[JobScoreInput]:
-    """Load enriched but unranked jobs in the same JSON shape used by the export utility."""
+    """Load enriched but unscored jobs in the same JSON shape used by the export utility."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -199,7 +199,7 @@ def fetch_jobs_to_score(conn: psycopg.Connection, limit: int) -> list[JobScoreIn
             JOIN green_enrich AS ge
               ON ge.job_id = gj.job_id
             WHERE gj.enriched = TRUE
-              AND ge.ranked IS NULL
+              AND ge.scored IS NULL
             ORDER BY gj.job_id
             LIMIT %s
             """,
@@ -399,10 +399,10 @@ def parse_scored_jobs(
 
 
 def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> None:
-    """Upsert the rank row and mark the enrichment row as ranked atomically."""
+    """Upsert the score row and mark the enrichment row as scored atomically."""
     with db_connect(autocommit=False) as conn:
         try:
-            ranked_at = datetime.now(timezone.utc)
+            scored_at = datetime.now(timezone.utc)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -413,7 +413,7 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                         compensation,
                         location,
                         overall,
-                        ranked_at,
+                        scored_at,
                         prompt,
                         model,
                         response
@@ -425,7 +425,6 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                         compensation = EXCLUDED.compensation,
                         location = EXCLUDED.location,
                         overall = EXCLUDED.overall,
-                        ranked_at = EXCLUDED.ranked_at,
                         prompt = EXCLUDED.prompt,
                         model = EXCLUDED.model,
                         response = EXCLUDED.response
@@ -437,7 +436,7 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                         scores.compensation,
                         scores.location,
                         scores.overall,
-                        ranked_at,
+                        scored_at,
                         PROMPT_FILE_NAME,
                         MODEL_NAME,
                         response_text,
@@ -446,10 +445,10 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                 cur.execute(
                     """
                     UPDATE green_enrich
-                    SET ranked = TRUE
+                    SET scored = TRUE,
                     WHERE job_id = %s
                     """,
-                    (job_id,),
+                    ( job_id),
                 )
             conn.commit()
         except Exception:
@@ -469,7 +468,7 @@ def score_jobs(mode: str, limit: int, rate_per_minute: int) -> RunSummary:
 
     summary.selected = len(jobs)
     if not jobs:
-        print("No enriched unranked jobs found")
+        print("No enriched unscored jobs found")
         return summary
 
     print(
@@ -523,9 +522,9 @@ def score_jobs(mode: str, limit: int, rate_per_minute: int) -> RunSummary:
                 summary.database_failures += 1
                 continue
 
-            summary.ranked += 1
+            summary.scored += 1
             print(
-                f"job_id={scored_job.job_id} ranked "
+                f"job_id={scored_job.job_id} scored "
                 f"job_fit={scored_job.scores.job_fit} "
                 f"interview_chances={scored_job.scores.interview_chances} "
                 f"compensation={scored_job.scores.compensation} "
@@ -557,7 +556,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     print(
-        f"Final summary: selected={summary.selected} ranked={summary.ranked} "
+        f"Final summary: selected={summary.selected} scored={summary.scored} "
         f"api_failures={summary.api_failures} parse_failures={summary.parse_failures} "
         f"database_failures={summary.database_failures} "
         f"prompt_tokens={summary.prompt_tokens} "

@@ -3,7 +3,7 @@
 ## Purpose
 
 - Define the interactive application queue in `src/apply/`.
-- Let the user quickly review ranked jobs by score threshold and move approved jobs into an application queue.
+- Let the user quickly review scored jobs by score threshold and move approved jobs into an application queue.
 
 ## Directory Scope
 
@@ -20,7 +20,7 @@
 
 ## High-Level Workflow
 
-1. Load ranked jobs from `green_job`, `green_enrich`, and `green_score`.
+1. Load scored jobs from `green_job`, `green_enrich`, and `green_score`.
 2. Ask the user which quality tier they want to review today.
 3. Use one of four thresholds: `60+`, `70+`, `80+`, or `90+`.
 4. Count how many jobs match the selected threshold and still have `gs.applied = FALSE`.

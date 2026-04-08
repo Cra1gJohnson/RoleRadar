@@ -70,8 +70,7 @@ Tasks:
 ## April 8th
 
 - create application table
-- change green_enrich.ranked = scored
-- change green_score.ranked_at = scored_at
+- rename enrichment scoring fields to `green_enrich.scored` and `green_score.scored_at`
 - create utility script to transfer backlog to application table
 - read about context caching
 - attempt to implement custom cover letter logic
