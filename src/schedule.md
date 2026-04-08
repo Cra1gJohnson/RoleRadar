@@ -63,7 +63,8 @@ Tasks:
 
 ## April 7th
 
-- finalize playwright improvement
+- finalize playwright improvement, what should I do about cookies?
+- - expand green_apply to include job_id, prompt, model, response, resume, cover letter, packaged_at, submitted_at fields
 - - begin application snapshot
 - - begin further discovery and snapshot updates
 
