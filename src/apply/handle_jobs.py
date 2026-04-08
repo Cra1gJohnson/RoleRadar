@@ -274,7 +274,7 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
         context = browser.contexts[0]
         page = context.new_page()
         page.goto(job.url)
-        page.set_default_timeout(2500)
+        page.set_default_timeout(2000)
         page.wait_for_load_state(state="load")
         
         # Establish root of the application

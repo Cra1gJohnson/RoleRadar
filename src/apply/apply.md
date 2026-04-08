@@ -54,6 +54,41 @@
     - `job_id`
     - `overall`
     - `applied`
+- `application`
+  - Persistent application record for submitted applications across all sources.
+  - Intended to become the source of truth for application history and operational metrics.
+  - Relevant fields:
+    - `app_id`
+    - `source`
+    - `source_job_id`
+    - `internal_job_id`
+    - `company_name`
+    - `title`
+    - `location`
+    - `url`
+    - `first_fetched_at`
+    - `description`
+    - `min`
+    - `max`
+    - `currency`
+    - `application_questions`
+    - `enriched_at`
+    - `overall`
+    - `score_prompt`
+    - `score_model`
+    - `scored_at`
+    - `apply_prompt`
+    - `apply_model`
+    - `apply_response`
+    - `resume`
+    - `cover_letter`
+    - `packaged_at`
+    - `submitted_at`
+    - `time_to_submit`
+  - Metrics use cases:
+    - Prompt and model comparisons for scoring and application packaging
+    - Time between fetch, enrich, score, package, and submit steps
+    - Submission timing and completion analysis
 - `green_apply`
   - Thin queue table for jobs approved for application.
   - Current v1 shape:
@@ -106,6 +141,7 @@
 
 - Keep this directory focused on application queueing and later application automation.
 - Keep the queue table thin so additional application metadata can be added later by downstream scripts.
+- Use `application` for persistent application history, metrics, and eventual source-of-truth reporting across all application sources.
 - Use `green_score.applied` as the immediate queue completion flag.
 - Use `src/execute.sh` to launch Chrome with `Profile 2`, then attach Playwright to `http://127.0.0.1:9222`.
 - `handle_jobs.py` reads the jobs package from `stdin`, connects over CDP, and fills standard Greenhouse forms from `answers.json` plus the stored AI response.

@@ -66,7 +66,15 @@ Tasks:
 - finalize playwright improvement, what should I do about cookies?
 - - expand green_apply to include job_id, prompt, model, response, resume, cover letter, packaged_at, submitted_at fields
 - - begin application snapshot
-- - begin further discovery and snapshot updates
+
+## April 8th
+
+- create application table
+- change green_enrich.ranked = scored
+- change green_score.ranked_at = scored_at
+- create utility script to transfer backlog to application table
+- read about context caching
+- attempt to implement custom cover letter logic
 
 ## Commit Guidelines
 
