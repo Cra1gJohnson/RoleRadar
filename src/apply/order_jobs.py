@@ -203,7 +203,15 @@ def approve_job(job_id: int) -> None:
                     """
                     INSERT INTO green_apply (job_id)
                     VALUES (%s)
-                    ON CONFLICT (job_id) DO NOTHING
+                    ON CONFLICT (job_id) DO UPDATE
+                    SET submitted_at = NULL,
+                        response = NULL,
+                        packaged_at = NULL,
+                        prompt = NULL,
+                        model = NULL,
+                        resume = NULL,
+                        cover_letter = NULL,
+                        time_to_submit = NULL
                     """,
                     (job_id,),
                 )

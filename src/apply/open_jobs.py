@@ -188,11 +188,8 @@ def fetch_jobs_package(conn: psycopg.Connection, limit: int) -> JobsPackage:
             FROM green_apply AS ga
             JOIN green_job AS gj
               ON gj.job_id = ga.job_id
-            JOIN green_enrich AS ge
-              ON ge.job_id = ga.job_id
-            WHERE ga.questions IS TRUE
+            WHERE ga.packaged_at IS NOT NULL
             AND ga.submitted_at IS NULL
-            AND ge.request_status = 200
             ORDER BY ga.job_id ASC
             LIMIT %s
             """,
@@ -251,7 +248,7 @@ def main() -> None:
         with db_connect() as conn:
             jobs_package = fetch_jobs_package(conn, args.limit)
             if not jobs_package.jobs:
-                print("No queued jobs with questions = TRUE were found")
+                print("No queued jobs with packaged_at IS NOT NULL were found")
                 return
 
             for job in jobs_package.jobs:

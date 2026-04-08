@@ -103,7 +103,7 @@ def fetch_apply_jobs(
         FROM green_apply AS ga
         JOIN green_job AS gj
           ON gj.job_id = ga.job_id
-        WHERE ga.questions IS TRUE
+        WHERE ga.packaged_at IS NOT NULL
           AND gj.url IS NOT NULL
     """
     params: list[object] = []
@@ -184,7 +184,7 @@ def main() -> None:
         with db_connect() as conn, requests.Session() as session:
             jobs = fetch_apply_jobs(conn, limit=args.limit, job_id=args.job_id)
             if not jobs:
-                print("No queued apply jobs with questions = TRUE were found")
+                print("No queued apply jobs with packaged_at IS NOT NULL were found")
                 return
 
             for job in jobs:

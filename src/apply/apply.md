@@ -29,8 +29,8 @@
 7. Ask the user to approve or skip each job using only keyboard input.
 8. Insert approved jobs into `green_apply`.
 9. Mark `green_score.applied = TRUE` after approval so the job leaves the queue.
-10. Run `prepare_app.py` later to fill in AI answers for queued jobs where `questions = FALSE`.
-11. Store the raw AI response in `green_apply.response` and flip `green_apply.questions = TRUE` after a successful prep write.
+10. Run `prepare_app.py` later to fill in AI answers for queued jobs where `packaged_at IS NULL`.
+11. Store the raw AI response, prompt name, and model name in `green_apply`, then set `green_apply.packaged_at` after a successful prep write.
 12. Start Chrome with `src/execute.sh`, then run `open_jobs.py` to attach over CDP, open the next queued application URL, and route it to the standard or nonstandard Playwright flow.
 
 ## Data Entities
@@ -59,9 +59,14 @@
   - Current v1 shape:
     - `job_id` primary key
     - foreign key to `green_job.job_id`
-    - `questions` boolean completion flag for application-question prep
-    - `response` raw AI response text for application-question answers
     - `submitted_at` timestamp set after the browser flow is confirmed complete
+    - `response` raw AI response text for application-question answers
+    - `packaged_at` timestamp set after application prep is written
+    - `prompt` prompt file name used for packaging, such as `prompt1.txt`
+    - `model` model name used for packaging
+    - `resume` placeholder text column, currently left `NULL`
+    - `cover_letter` placeholder text column, currently left `NULL`
+    - `time_to_submit` placeholder duration column, currently left `NULL`
 
 ## Operational Rules
 
@@ -69,7 +74,7 @@
 - Only jobs with `gs.applied = FALSE` are eligible.
 - The join aliases should remain `gj`, `ge`, and `gs` for readability and consistency.
 - Approved jobs must be written to `green_apply` and marked `green_score.applied = TRUE` in the same transaction.
-- Application-question preparation must store the AI response in `green_apply.response` and set `green_apply.questions = TRUE` only after a successful write.
+- Application-question preparation must store the AI response, prompt name, and model name in `green_apply`, then set `green_apply.packaged_at` only after a successful write.
 - After `handle_jobs.py` finishes a job, `open_jobs.py` should prompt for `y/n` confirmation and set `green_apply.submitted_at` only on `y`.
 - The tool should be usable from the terminal without a mouse.
 - URLs should be displayed as terminal hyperlinks when the terminal supports it, with plain-text fallback otherwise.
@@ -87,16 +92,15 @@
 ## prepare_app.py Behavior
 
 - Supports `--test`, `--full`, `--limit`, and `--redo` modes from the CLI.
-- `--test` prepares the first queued job where `green_apply.questions = FALSE`.
-- `--full` prepares all queued jobs where `green_apply.questions = FALSE`.
+- `--test` prepares the first queued job where `green_apply.packaged_at IS NULL`.
+- `--full` prepares all queued jobs where `green_apply.packaged_at IS NULL`.
 - `--limit` only applies to `--full` and caps how many queued jobs are processed.
-- `--redo` prepares every row in `green_apply`, regardless of the current `questions` flag.
+- `--redo` prepares every row in `green_apply`, regardless of the current `packaged_at` flag.
 - Joins `green_job`, `green_enrich`, and `green_score` for application context.
 - Loads `prompt1.txt` and injects one job at a time.
 - Filters out trivial questions using the labels found in `src/scoring/enrichment_display/`.
-- Sends the remaining non-trivial questions to the AI API and stores the raw response in `green_apply.response`.
-- Sets `green_apply.questions = TRUE` after a successful response write.
-- Leaves failed jobs eligible for retry by keeping `questions = FALSE`.
+- Sends the remaining non-trivial questions to the AI API and stores the raw response, prompt name, model name, and `packaged_at` marker in `green_apply`.
+- Leaves failed API calls eligible for retry by keeping `packaged_at IS NULL`.
 
 ## Prompt Context for Future Work
 
@@ -112,7 +116,7 @@
 ## open_jobs.py Behavior
 
 - Waits for the Chrome CDP endpoint started by `src/execute.sh`.
-- Loads queued jobs from `green_apply` where `questions = TRUE`.
+- Loads queued jobs from `green_apply` where `packaged_at IS NOT NULL`.
 - Excludes rows whose `green_enrich.request_status = 404`.
 - Opens each job URL in the existing Chrome profile.
 - Classifies URLs as `standard_greenhouse` or `nonstandard` using the job-board host.
@@ -124,7 +128,7 @@
 
 ## dump_apply_html.py Behavior
 
-- Reads queued jobs from `green_apply` where `questions = TRUE`.
+- Reads queued jobs from `green_apply` where `packaged_at IS NOT NULL`.
 - Joins `green_job` to get the live application URL.
 - Fetches the page HTML with a browser-like HTTP session.
 - Writes one UTF-8 `.txt` snapshot per job into `src/apply/green_questions/`.

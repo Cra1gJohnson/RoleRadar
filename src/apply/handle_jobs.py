@@ -368,7 +368,7 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
                     box = form.get_by_role("textbox", name=resp["question label"])
                     box.wait_for(state="visible")
                     box.click()
-                    box.press_sequentially(resp["answer label"], delay=10, timeout=7000)
+                    box.press_sequentially(resp["answer label"], delay=10, timeout=10000)
                 
             except Exception as exec:
                 print(f"yeah, ;-( it was {resp["question label"]} and {exec}")

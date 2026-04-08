@@ -87,7 +87,7 @@ class PrepSummary:
     """Track the aggregate outcome of one application-prep run."""
 
     selected: int = 0
-    prepared: int = 0
+    packaged: int = 0
     api_failures: int = 0
     parse_failures: int = 0
     database_failures: int = 0
@@ -140,12 +140,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Prepare only the first queued job with questions = FALSE",
+        help="Prepare only the first queued job with packaged_at IS NULL",
     )
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Prepare all queued jobs with questions = FALSE",
+        help="Prepare all queued jobs with packaged_at IS NULL",
     )
     parser.add_argument(
         "--limit",
@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--redo",
         action="store_true",
-        help="Prepare every queued job again, regardless of questions completion state",
+        help="Prepare every queued job again, regardless of packaged completion state",
     )
     parser.add_argument(
         "--rate-per-minute",
@@ -236,10 +236,10 @@ def fetch_jobs_to_prepare(
     mode: str,
     limit: Optional[int],
 ) -> list[ApplicationPrepJob]:
-    """Load queued jobs that still need application-question preparation."""
-    questions_clause = ""
+    """Load queued jobs that still need application preparation."""
+    packaged_clause = ""
     if mode in {"test", "full"}:
-        questions_clause = "WHERE ga.questions IS FALSE"
+        packaged_clause = "WHERE ga.packaged_at IS NULL"
 
     query = """
         SELECT
@@ -260,9 +260,10 @@ def fetch_jobs_to_prepare(
           ON ge.job_id = ga.job_id
         JOIN green_score AS gs
           ON gs.job_id = ga.job_id
-        {questions_clause}
+        {packaged_clause}
+        AND ga.submitted_at IS NULL
         ORDER BY gs.overall DESC, ga.job_id ASC
-    """.format(questions_clause=questions_clause)
+    """.format(packaged_clause=packaged_clause)
 
     params: list[Any] = []
     if mode == "test":
@@ -374,18 +375,19 @@ def persist_response(
     conn: psycopg.Connection,
     job_id: int,
     response_text: str,
-    questions_done: bool,
 ) -> None:
-    """Store the raw response and optionally mark the job as prepared."""
+    """Store the raw response and mark the job as packaged."""
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE green_apply
             SET response = %s,
-                questions = %s
+                prompt = %s,
+                model = %s,
+                packaged_at = NOW()
             WHERE job_id = %s
             """,
-            (response_text, questions_done, job_id),
+            (response_text, PROMPT_FILE_NAME, MODEL_NAME, job_id),
         )
 
 
@@ -394,7 +396,7 @@ def count_jobs_to_prepare(conn: psycopg.Connection, mode: str) -> int:
     if mode == "redo":
         query = "SELECT COUNT(*) FROM green_apply AS ga"
     else:
-        query = "SELECT COUNT(*) FROM green_apply AS ga WHERE ga.questions IS FALSE"
+        query = "SELECT COUNT(*) FROM green_apply AS ga WHERE ga.packaged_at IS NULL"
 
     with conn.cursor() as cur:
         cur.execute(query)
@@ -430,14 +432,14 @@ def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) 
             if not filtered_questions:
                 empty_response = build_empty_response(job.job_id)
                 try:
-                    persist_response(conn, job.job_id, empty_response, True)
+                    persist_response(conn, job.job_id, empty_response)
                 except psycopg.Error as exc:
                     print(f"job_id={job.job_id} database failed: {exc}")
                     summary.database_failures += 1
                     continue
 
-                summary.prepared += 1
-                print(f"job_id={job.job_id} prepared (no non-trivial questions)")
+                summary.packaged += 1
+                print(f"job_id={job.job_id} packaged (no non-trivial questions)")
                 continue
 
             prompt = render_prompt(prompt_template, job_payload)
@@ -455,7 +457,7 @@ def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) 
             except Exception as exc:
                 print(f"job_id={job.job_id} parse failed: {exc}")
                 try:
-                    persist_response(conn, job.job_id, response_text, False)
+                    persist_response(conn, job.job_id, response_text)
                 except psycopg.Error as db_exc:
                     print(f"job_id={job.job_id} database failed: {db_exc}")
                     summary.database_failures += 1
@@ -464,14 +466,14 @@ def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) 
                 continue
 
             try:
-                persist_response(conn, job.job_id, response_text, True)
+                persist_response(conn, job.job_id, response_text)
             except psycopg.Error as exc:
                 print(f"job_id={job.job_id} database failed: {exc}")
                 summary.database_failures += 1
                 continue
 
-            summary.prepared += 1
-            print(f"job_id={job.job_id} prepared")
+            summary.packaged += 1
+            print(f"job_id={job.job_id} packaged")
 
     return summary
 
@@ -511,7 +513,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     print(
-        f"Final summary: selected={summary.selected} prepared={summary.prepared} "
+        f"Final summary: selected={summary.selected} packaged={summary.packaged} "
         f"api_failures={summary.api_failures} parse_failures={summary.parse_failures} "
         f"database_failures={summary.database_failures}"
     )
