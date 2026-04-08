@@ -91,6 +91,28 @@ class JobsPackage:
 
     jobs: list[JobsPackageItem]
 
+def dismiss_cookie_banner(page_or_frame):
+      """ Dismiss cookies at the opening of a url """
+      buttons = [
+          "Accept",
+          "Accept all",
+          "Agree",
+          "I agree",
+          "Allow all",
+          "Got it",
+      ]
+
+      for name in buttons:
+          btn = page_or_frame.get_by_role("button", name=name).first
+          try:
+              if btn.count() > 0:
+                  btn.click(timeout=500)
+                  return True
+          except Exception:
+              pass
+
+      return False
+
 def try_combobox(form, check: json) :
     
     for i in range(len(check["answers"])) :
@@ -261,6 +283,9 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
         else:
             form = find_root(page).content_frame
         
+        dismiss_cookie_banner(page)
+        dismiss_cookie_banner(form)
+
         # try every question in common
         for check in COMMON["checks"] :
             try_question(form, check)            
