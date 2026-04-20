@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
-
+from utility import backfill_application
 import requests
 
 from handle_jobs import reciever
@@ -288,6 +288,7 @@ def main() -> None:
                             """,
                             (job.job_id,),
                         )
+                    backfill_application.insert_application_row(conn, job.job_id)
                     print(f"job_id={job.job_id} marked submitted")
     except (OSError, ValueError, psycopg.Error, RuntimeError) as exc:
         print(str(exc))

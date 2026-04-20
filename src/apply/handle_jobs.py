@@ -353,7 +353,7 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
                     box.press_sequentially(resp["answer label"], delay=30)
                     if resp["answer label"] != "" :
                         form.get_by_role("option", name=resp["answer label"], exact=True).click()
-                elif resp["style"] == "Input":
+                elif resp["style"] == "Input" or resp["style"] == "Input_Text":
                     box = form.get_by_label(resp["question label"]).first
                     box.wait_for(state="visible")
                     box.click()
@@ -481,7 +481,6 @@ def reciever(package: json) -> None:
     if not package.jobs:
         print("no jobs ready for application")
         return
-    print(COMMON)
     
     for job in package.jobs :
         try:

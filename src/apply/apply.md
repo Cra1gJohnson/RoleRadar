@@ -14,6 +14,7 @@
 - `handle_jobs.py`: Playwright browser runner that consumes the `open_jobs.py` package JSON and fills standard Greenhouse forms.
 - `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `utility/reset_green_apply.py`: clears queued apply rows back to a blank replay state for one or more job ids.
+- `utility/backfill_application.py`: backfills submitted apply rows into the persistent `application` table.
 - `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
 - `green_apply_schema.py`: shared helper for creating and evolving the apply queue table.
@@ -148,6 +149,8 @@
 - `answers.json` can use `{"value": "...", "variants": [...]}` for answers that need multiple select-friendly forms, such as `United States` and `US`.
 - `open_jobs.py` emits the JSON jobs package that `handle_jobs.py` consumes.
 - `utility/reset_green_apply.py` can be used to clear `green_apply` rows for a replay, leaving `job_id` intact and resetting the rest of the row state.
+- `utility/backfill_application.py` can be used to move submitted rows from `green_apply` into `application` when a persistent record is missing.
+- `utility/backfill_application.py` treats `green_job.greenhouse_job_id` as the persistent `application.source_job_id` value so submitted rows can be compared against the source-system identifier.
 
 ## open_jobs.py Behavior
 

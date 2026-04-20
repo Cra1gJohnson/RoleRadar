@@ -22,7 +22,7 @@ from scoring.utility.green_as_json import parse_application_questions
 load_shared_env()
 
 DEFAULT_RATE_PER_MINUTE = 12
-MODEL_NAME = "gemini-2.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash"
 PROMPT_FILE_NAME = "prompt1.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
 ENRICHMENT_DISPLAY_DIR = SRC_ROOT / "scoring" / "enrichment_display"

@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import json
 import re
@@ -22,6 +23,16 @@ QUERY_TEMPLATES = (
     "site:job-boards.greenhouse.io {name}",
 )
 TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+GREENHOUSE_API_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+}
 
 
 class Settings(BaseSettings):
@@ -250,11 +261,42 @@ def extract_result_urls(payload: dict) -> list[str]:
     return urls
 
 
-def validate_board_token(http: httpx.Client, token: str) -> bool:
-    response = http.get(GREENHOUSE_VALIDATE_API.format(token=quote(token, safe="")))
+async def validate_board_token(http: httpx.AsyncClient, token: str) -> bool:
+    response = await http.get(GREENHOUSE_VALIDATE_API.format(token=quote(token, safe="")))
     response.raise_for_status()
     payload = response.json()
     return isinstance(payload, (dict, list))
+
+
+async def validate_candidate_tokens_async(tokens: Sequence[str]) -> dict[str, bool]:
+    if not tokens:
+        return {}
+
+    concurrency = min(8, len(tokens))
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def validate_one(
+        http: httpx.AsyncClient,
+        token: str,
+    ) -> tuple[str, bool]:
+        async with semaphore:
+            try:
+                is_valid = await validate_board_token(http, token)
+            except (httpx.HTTPError, json.JSONDecodeError, ValueError):
+                is_valid = False
+            return token, is_valid
+
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        headers=GREENHOUSE_API_HEADERS,
+    ) as http:
+        results = await asyncio.gather(*(validate_one(http, token) for token in tokens))
+
+    return {token: is_valid for token, is_valid in results}
+
+
+def validate_candidate_tokens(tokens: Sequence[str]) -> dict[str, bool]:
+    return asyncio.run(validate_candidate_tokens_async(tokens))
 
 
 def run_search(
@@ -307,15 +349,12 @@ def process_query(
             }
         )
 
+        token_validity = validate_candidate_tokens(candidate_tokens)
+
         valid_tokens = 0
         inserted_tokens = 0
         for token in candidate_tokens:
-            try:
-                is_valid = validate_board_token(http, token)
-            except (httpx.HTTPError, json.JSONDecodeError, ValueError):
-                is_valid = False
-
-            if not is_valid:
+            if not token_validity.get(token, False):
                 continue
 
             valid_tokens += 1
