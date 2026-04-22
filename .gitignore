@@ -22,5 +22,7 @@ src/apply/green_questions
 *.txt
 #
 !discovery_names.txt
-
+#
 src/apply/answers.json
+#
+templates
