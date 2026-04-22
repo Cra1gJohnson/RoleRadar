@@ -26,3 +26,5 @@ src/apply/green_questions
 src/apply/answers.json
 #
 templates
+#
+.codex

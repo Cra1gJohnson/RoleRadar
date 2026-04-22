@@ -73,7 +73,25 @@ Tasks:
 - rename enrichment scoring fields to `green_enrich.scored` and `green_score.scored_at`
 - create utility script to transfer backlog to application table
 - read about context caching
-- attempt to implement custom cover letter logic
+
+## April 20th
+
+- git history changing
+- GH remote change
+
+## April 21st
+
+- latex starter files for software dev
+- resume
+- and coverletter
+
+## April 22nd
+
+- refresh entire snapshot
+- create utility script to print jobs at each stage for monitoring
+- implement answer caching and approval for application packaging
+
+- push for ashby addition
 
 ## Commit Guidelines
 
