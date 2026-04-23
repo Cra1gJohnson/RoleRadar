@@ -11,21 +11,23 @@
 - `greenhouse_board_resp/`: directory of real Greenhouse board GET responses for context and testing.
 - `collection.md`: operating notes, assumptions, and future prompt context.
 - `collection_control.py`: control script for collection scheduling and monitoring.
-- `board_hash.py`: board snapshot fetcher and hash tracker for Greenhouse boards.
-- `upsert_jobs.py`: job normalization and upsert runner for `green_job`.
-- `pull_ten.py`: utility script for fetching sample board responses during development.
+- `normalization.py`: pure board-response normalization helpers with no database access.
+- `upsert.py`: async comparison and upsert helpers for `green_job`.
+- `delete.py`: async stale-row deletion helpers for `green_job`.
+- `utility/pull_ten_boards.py`: utility script for fetching sample board responses during development.
 
 ## High-Level Workflow
 
 1. Read candidate Greenhouse board tokens from PostgreSQL (`board_token`).
 2. Select boards to monitor based on polling cadence and prior collection results.
 3. Fetch `GET https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs`.
-4. Compute a board hash from the sorted list of `jobs[].id` values.
-5. Persist a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
-6. Detect whether the latest board hash differs from the previous successful snapshot.
-7. Normalize jobs from changed board snapshots.
-8. Upsert normalized jobs into PostgreSQL (`green_job`).
-9. Record monitoring state so the next poll cycle can prioritize boards correctly.
+4. Normalize the returned board payload in memory.
+5. Compute a board hash from the sorted list of `jobs[].id` values.
+6. Persist or update a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
+7. Compare the U.S.-eligible normalized response jobs to the current `green_job` rows for the same token.
+8. Upsert U.S.-eligible response jobs into PostgreSQL (`green_job`).
+9. Delete `green_job` rows for that token that are no longer present in the U.S.-eligible normalized response.
+10. Record monitoring state so the next poll cycle can prioritize boards correctly.
 
 ## Collection Targets
 
@@ -58,7 +60,7 @@
     - `company_name` (best available board-level company label)
     - `status` (`board_priority`; values include `HOT`, `WARM`, `COLD`, `DEAD`)
     - `united_states` (whether the latest normalization pass found at least one U.S. job)
-  - Used to track board changes over time and decide whether job normalization should run.
+  - Used to track board changes over time and store the latest fetch metadata.
   - Only one snapshot per board right now.
 - `green_job`
   - Stores normalized jobs derived from Greenhouse board snapshots.
@@ -101,55 +103,57 @@
 ## Operational Rules
 
 - Prefer idempotent writes wherever possible.
-- Keep board fetching separate from job normalization and job upsert behavior.
-- Treat board hashing as a board-level change detector, not as a replacement for normalized job storage.
-- Only trigger normalization/upsert when a new board snapshot represents a meaningful board change.
+- Keep board fetching separate from job normalization and job table writes.
+- Treat board hashing as snapshot metadata, not as a gate for whether the board should be synchronized.
+- Normalize every successful board response before comparing it to the database state.
+- Keep all returned job IDs in the board hash, but only write U.S.-eligible jobs into `green_job`.
 - Keep request status and fetch time for every board poll attempt.
 - Maintain traceability from normalized jobs back to the source `greenhouse_board_snapshot`.
 - Maintain traceability from normalized jobs back to the originating `board_token`.
 - Preserve downstream progress markers on existing jobs unless a later workflow explicitly resets them.
+- Delete stale `green_job` rows when they are no longer present in the U.S.-eligible normalized live-board response.
 
 ## Prompt Context for Future Work
 
 - Use this directory as the source of truth for Greenhouse board collection scope.
-- Keep the system split into three responsibilities:
+- Keep the system split into four responsibilities:
   - collection scheduling and monitoring
   - board snapshot fetching and hashing
-  - job normalization and upsert
+  - pure job normalization
+  - database upsert/delete synchronization
 - Prefer storing board-level evidence in `greenhouse_board_snapshot` and normalized job-level data in `green_job`.
 - Optimize for repeated polling across thousands of boards without unnecessary reprocessing.
 - Keep `green_job` minimal so enrichment-specific data can live in downstream tables.
 
 ## collection_control.py Behavior
 
-- Owns monitoring cadence and polling decisions.
-- Selects which board tokens should be fetched next.
-- Tracks collection progress across the board population.
-- Provides the control layer for repeated board monitoring runs.
+- Owns monitoring cadence, polling decisions, and async fetch orchestration.
+- Uses a bounded queue so responses can be normalized and written sequentially.
+- Keeps one PostgreSQL connection open for the duration of the run.
+- Updates `greenhouse_board_snapshot` on every successful or failed fetch attempt.
+- Feeds normalized work items into the database writer stage so upsert and delete remain sequential.
 
-## board_hash.py Behavior
+## normalization.py Behavior
 
-- Reads Greenhouse board tokens from PostgreSQL.
-- Requests board job payloads from the Greenhouse board jobs API.
-- Extracts all `jobs[].id` values from the JSON response.
-- Sorts job IDs before hashing so the board hash is order-independent.
-- Inserts a new row into `greenhouse_board_snapshot` for each fetched board.
-- Records request status, fetch time, board hash, job count, company name, and board status.
-- Marks empty boards as `COLD`.
-- Acts as the board snapshot layer for change detection.
+- Converts a raw Greenhouse board payload into a pure in-memory normalized shape.
+- Validates `jobs[].id` values and derives the response job id list used for board hashing.
+- Normalizes the job fields needed for `green_job`.
+- Separates all normalized jobs from the U.S.-eligible subset used for database writes.
+- Does not access PostgreSQL.
 
-## upsert_jobs.py Behavior
+## upsert.py Behavior
 
-- Reads board snapshots that require job normalization.
-- Takes parameters: payload (json), token (board_token), check_comp (bool).
-- `check_comp` indicates if there is an existing snapshot.
-- If there is an existing snapshot then jobs must be checked to see if they are up to date.
-- Normalizes Greenhouse job payloads into the shape expected by `green_job`.
-- Inserts new jobs and updates existing jobs using upsert behavior.
-- Preserves linkage back to the originating `greenhouse_board_snapshot` with token.
-- Writes the thin job-level fields currently defined in `green_job`, including `company_name`, `title`, `location`, `url`, `first_fetched_at`, `updated_at`, `candidate`, and `enriched`.
-- Leaves downstream enrichment data outside the collection layer.
-- Serves as the normalized jobs layer for downstream querying and analytics.
+- Compares normalized response jobs against existing `green_job` rows for the same token.
+- Inserts new jobs and updates jobs present in both the database and the live response.
+- Leaves unchanged rows untouched when the upstream `updated_at` value matches.
+- Uses the current snapshot id for the rows it writes.
+- Only receives U.S.-eligible jobs from the collection controller.
+
+## delete.py Behavior
+
+- Loads the current `green_job` rows for a token.
+- Deletes rows whose `greenhouse_job_id` is no longer present in the U.S.-eligible normalized response.
+- Verifies the `green_job` child-table cascade contract before destructive deletes run.
 
 ## Open Questions
 

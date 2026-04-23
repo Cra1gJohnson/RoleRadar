@@ -88,7 +88,10 @@ Tasks:
 ## April 22nd
 
 - refresh entire snapshot
+- - async implemented in snapshot refresh and rpm bumped to 200
 - create utility script to print jobs at each stage for monitoring
+- - script created under utility, prints counts from each table
+
 - implement answer caching and approval for application packaging
 
 - push for ashby addition
