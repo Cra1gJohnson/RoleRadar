@@ -97,7 +97,7 @@ def prompt_for_threshold() -> int:
 
 
 def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
-    """Count un-applied scored jobs at or above the selected score threshold."""
+    """Count unseen scored jobs at or above the selected score threshold."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -107,7 +107,8 @@ def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
               ON ge.job_id = gj.job_id
             JOIN green_score AS gs
               ON gs.job_id = gj.job_id
-            WHERE gs.applied IS FALSE
+            WHERE COALESCE(gs.viewed, FALSE) IS FALSE
+              AND COALESCE(gs.applied, FALSE) IS FALSE
               AND gs.overall >= %s
             """,
             (threshold,),
@@ -117,7 +118,7 @@ def count_jobs(conn: psycopg.Connection, threshold: int) -> int:
 
 
 def fetch_jobs(conn: psycopg.Connection, threshold: int) -> list[ApplyJob]:
-    """Load scored jobs ready for review."""
+    """Load unseen scored jobs ready for review."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -134,7 +135,8 @@ def fetch_jobs(conn: psycopg.Connection, threshold: int) -> list[ApplyJob]:
               ON ge.job_id = gj.job_id
             JOIN green_score AS gs
               ON gs.job_id = gj.job_id
-            WHERE gs.applied IS FALSE
+            WHERE COALESCE(gs.viewed, FALSE) IS FALSE
+              AND COALESCE(gs.applied, FALSE) IS FALSE
               AND gs.overall >= %s
             ORDER BY gs.overall DESC, gj.job_id ASC
             """,
@@ -194,11 +196,11 @@ def prompt_approval() -> bool:
         print("Enter y or n.")
 
 
-def approve_job(job_id: int) -> None:
-    """Insert the job into the apply queue and mark it as applied."""
-    with db_connect(autocommit=False) as conn:
-        try:
-            with conn.cursor() as cur:
+def record_job_decision(conn: psycopg.Connection, job_id: int, approved: bool) -> None:
+    """Persist the user's decision and update the source score row."""
+    with conn.transaction():
+        with conn.cursor() as cur:
+            if approved:
                 cur.execute(
                     """
                     INSERT INTO green_apply (job_id)
@@ -215,18 +217,16 @@ def approve_job(job_id: int) -> None:
                     """,
                     (job_id,),
                 )
-                cur.execute(
-                    """
-                    UPDATE green_score
-                    SET applied = TRUE
-                    WHERE job_id = %s
-                    """,
-                    (job_id,),
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+
+            cur.execute(
+                """
+                UPDATE green_score
+                SET viewed = TRUE,
+                    applied = %s
+                WHERE job_id = %s
+                """,
+                (True if approved else None, job_id),
+            )
 
 
 def run_apply_queue() -> ApplySummary:
@@ -239,37 +239,37 @@ def run_apply_queue() -> ApplySummary:
         summary.available = count_jobs(conn, threshold)
         jobs = fetch_jobs(conn, threshold)
 
-    print(
-        f"Found {summary.available} jobs with overall >= {summary.selected_threshold} "
-        f"and applied = FALSE."
-    )
+        print(
+            f"Found {summary.available} jobs with overall >= {summary.selected_threshold} "
+            f"and unseen by review."
+        )
 
-    if not jobs:
-        print("No jobs matched your selection.")
-        return summary
+        if not jobs:
+            print("No jobs matched your selection.")
+            return summary
 
-    for index, job in enumerate(jobs, start=1):
-        summary.reviewed += 1
-        display_job(job, index, len(jobs))
-        try:
-            approved = prompt_approval()
-        except KeyboardInterrupt:
-            print("\nStopped by user.")
-            break
+        for index, job in enumerate(jobs, start=1):
+            summary.reviewed += 1
+            display_job(job, index, len(jobs))
+            try:
+                approved = prompt_approval()
+            except KeyboardInterrupt:
+                print("\nStopped by user.")
+                break
 
-        if not approved:
-            summary.skipped += 1
-            continue
+            try:
+                record_job_decision(conn, job.job_id, approved=approved)
+            except psycopg.Error as exc:
+                summary.failures += 1
+                print(f"job_id={job.job_id} failed to queue: {exc}")
+                continue
 
-        try:
-            approve_job(job.job_id)
-        except psycopg.Error as exc:
-            summary.failures += 1
-            print(f"job_id={job.job_id} failed to queue: {exc}")
-            continue
-
-        summary.approved += 1
-        print(f"job_id={job.job_id} added to green_apply")
+            if approved:
+                summary.approved += 1
+                print(f"job_id={job.job_id} added to green_apply")
+            else:
+                summary.skipped += 1
+                print(f"job_id={job.job_id} marked as viewed")
 
     return summary
 

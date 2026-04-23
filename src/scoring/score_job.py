@@ -448,7 +448,7 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                     SET scored = TRUE,
                     WHERE job_id = %s
                     """,
-                    ( job_id),
+                    (job_id),
                 )
             conn.commit()
         except Exception:

@@ -14,6 +14,7 @@
 - `handle_jobs.py`: Playwright browser runner that consumes the `open_jobs.py` package JSON and fills standard Greenhouse forms.
 - `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `utility/reset_green_apply.py`: clears queued apply rows back to a blank replay state for one or more job ids.
+- `utility/reset_green_score_viewed.py`: clears the `green_score.viewed` flag for one or more un-applied jobs so they can be reviewed again.
 - `utility/backfill_application.py`: backfills submitted apply rows into the persistent `application` table.
 - `prompt1.txt`: prompt template used for application-question answers.
 - `apply.sh`: browser launcher used later by application automation.
@@ -24,15 +25,18 @@
 1. Load scored jobs from `green_job`, `green_enrich`, and `green_score`.
 2. Ask the user which quality tier they want to review today.
 3. Use one of four thresholds: `60+`, `70+`, `80+`, or `90+`.
-4. Count how many jobs match the selected threshold and still have `gs.applied = FALSE`.
+4. Count how many jobs match the selected threshold and still have `gs.viewed = FALSE` and `gs.applied = FALSE`.
 5. Display matching jobs one at a time in descending score order.
 6. Show `company_name`, `title`, `location`, `min_salary`, `url`, and `overall` for each job.
 7. Ask the user to approve or skip each job using only keyboard input.
 8. Insert approved jobs into `green_apply`.
-9. Mark `green_score.applied = TRUE` after approval so the job leaves the queue.
-10. Run `prepare_app.py` later to fill in AI answers for queued jobs where `packaged_at IS NULL`.
-11. Store the raw AI response, prompt name, and model name in `green_apply`, then set `green_apply.packaged_at` after a successful prep write.
-12. Start Chrome with `src/execute.sh`, then run `open_jobs.py` to attach over CDP, open the next queued application URL, and route it to the standard or nonstandard Playwright flow.
+9. Mark `green_score.viewed = TRUE` for both yes and no decisions so the job does not reappear in the review queue.
+10. Mark `green_score.applied = TRUE` only when the answer is yes.
+11. Leave `green_score.applied` as `NULL` on no decisions so the row stays un-applied.
+12. Run `prepare_app.py` later to fill in AI answers for queued jobs where `packaged_at IS NULL`.
+13. Review any editable `Text_Area` or `Input_Text` answers in the terminal before the response is stored.
+14. Store the approved response JSON in `green_apply`, then insert any accepted editable answers into the accepted-answer history table for future prompt context.
+15. Start Chrome with `src/execute.sh`, then run `open_jobs.py` to attach over CDP, open the next queued application URL, and route it to the standard or nonstandard Playwright flow.
 
 ## Data Entities
 
@@ -55,6 +59,7 @@
     - `job_id`
     - `overall`
     - `applied`
+    - `viewed`
 - `application`
   - Persistent application record for submitted applications across all sources.
   - Intended to become the source of truth for application history and operational metrics.
@@ -96,21 +101,33 @@
     - `job_id` primary key
     - foreign key to `green_job.job_id`
     - `submitted_at` timestamp set after the browser flow is confirmed complete
-    - `response` raw AI response text for application-question answers
+    - `response` approved AI response JSON for application-question answers
     - `packaged_at` timestamp set after application prep is written
     - `prompt` prompt file name used for packaging, such as `prompt1.txt`
     - `model` model name used for packaging
     - `resume` placeholder text column, currently left `NULL`
     - `cover_letter` placeholder text column, currently left `NULL`
     - `time_to_submit` placeholder duration column, currently left `NULL`
+- `green_apply_answers`
+  - Accepted editable-answer history for future prompt context.
+  - Relevant fields:
+    - `job_id`
+    - `question_label`
+    - `answer_style`
+    - `answer_text`
+    - `prompt`
+    - `model`
+    - `accepted_at`
 
 ## Operational Rules
 
 - Selection is threshold-based and inclusive: a `70+` choice means `overall >= 70`.
-- Only jobs with `gs.applied = FALSE` are eligible.
+- Only jobs with `gs.applied = FALSE` and `gs.viewed = FALSE` are eligible.
 - The join aliases should remain `gj`, `ge`, and `gs` for readability and consistency.
-- Approved jobs must be written to `green_apply` and marked `green_score.applied = TRUE` in the same transaction.
-- Application-question preparation must store the AI response, prompt name, and model name in `green_apply`, then set `green_apply.packaged_at` only after a successful write.
+- Approved jobs must be written to `green_apply` and marked `green_score.applied = TRUE` and `green_score.viewed = TRUE` in the same transaction.
+- Rejected jobs must be marked `green_score.viewed = TRUE` and leave `green_score.applied = NULL`.
+- Application-question preparation must store the approved response JSON, prompt name, and model name in `green_apply`, then set `green_apply.packaged_at` only after a successful write.
+- Accepted editable answers from approved prep runs must be inserted into `green_apply_answers` so later prompts can load the most recent examples.
 - After `handle_jobs.py` finishes a job, `open_jobs.py` should prompt for `y/n` confirmation and set `green_apply.submitted_at` only on `y`.
 - The tool should be usable from the terminal without a mouse.
 - URLs should be displayed as terminal hyperlinks when the terminal supports it, with plain-text fallback otherwise.
@@ -121,8 +138,8 @@
 - Reports the number of matching jobs before review starts.
 - Renders each job with the fields needed to make a quick decision.
 - Accepts `y` or `n` for each job.
-- On `y`, inserts the job into `green_apply` and marks it applied.
-- On `n`, leaves the row unchanged and moves on.
+- On `y`, inserts the job into `green_apply` and marks the score row as viewed and applied.
+- On `n`, marks the score row as viewed, leaves `applied` null, and moves on.
 - Prints a concise final summary with threshold, available jobs, reviewed jobs, approvals, skips, and failures.
 
 ## prepare_app.py Behavior
@@ -135,7 +152,9 @@
 - Joins `green_job`, `green_enrich`, and `green_score` for application context.
 - Loads `prompt1.txt` and injects one job at a time.
 - Filters out trivial questions using the labels found in `src/scoring/enrichment_display/`.
-- Sends the remaining non-trivial questions to the AI API and stores the raw response, prompt name, model name, and `packaged_at` marker in `green_apply`.
+- Loads the last 10 accepted applications and injects them into the prompt as context examples.
+- Sends the remaining non-trivial questions to the AI API, then opens one `nvim` review buffer containing the job description, recent accepted applications, and editable `Text_Area` and `Input_Text` answers before storing the approved response, prompt name, model name, and `packaged_at` marker in `green_apply`.
+- Stores every accepted editable answer in `green_apply_answers` so future prompts can reuse the latest examples.
 - Leaves failed API calls eligible for retry by keeping `packaged_at IS NULL`.
 
 ## Prompt Context for Future Work
@@ -149,6 +168,7 @@
 - `answers.json` can use `{"value": "...", "variants": [...]}` for answers that need multiple select-friendly forms, such as `United States` and `US`.
 - `open_jobs.py` emits the JSON jobs package that `handle_jobs.py` consumes.
 - `utility/reset_green_apply.py` can be used to clear `green_apply` rows for a replay, leaving `job_id` intact and resetting the rest of the row state.
+- `utility/reset_green_score_viewed.py` can be used to make one or more rejected jobs visible in `order_jobs.py` again.
 - `utility/backfill_application.py` can be used to move submitted rows from `green_apply` into `application` when a persistent record is missing.
 - `utility/backfill_application.py` treats `green_job.greenhouse_job_id` as the persistent `application.source_job_id` value so submitted rows can be compared against the source-system identifier.
 

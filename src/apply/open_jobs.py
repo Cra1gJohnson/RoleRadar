@@ -26,7 +26,7 @@ DEFAULT_LIMIT = 1
 # DEFAULT_WAIT_SECONDS = 30
 # STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
 
-STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io"}
+STANDARD_GREENHOUSE_DOMAINS = {"job-boards.greenhouse.io", "boards.greenhouse.io", "job-boards.eu.greenhouse.io"}
 GREENHOUSE_URL_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) "

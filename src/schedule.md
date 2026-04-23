@@ -96,6 +96,15 @@ Tasks:
 
 - push for ashby addition
 
+## Next things
+
+- candidate_filter needs to do the regex inside of psql because It takes far too long outside.
+- fix bug in score jobs
+- make prepare_apps async. 
+- add in last 10 apps as context 
+- add in url when about to edit text area
+- finally finish latex injection for custom cover letters. 
+
 ## Commit Guidelines
 
 Conventional Commits
