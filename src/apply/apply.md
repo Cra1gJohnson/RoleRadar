@@ -145,6 +145,7 @@
 ## prepare_app.py Behavior
 
 - Supports `--test`, `--full`, `--limit`, and `--redo` modes from the CLI.
+- Supports optional `--rate-per-minute` and `--max-concurrency` controls for request throughput.
 - `--test` prepares the first queued job where `green_apply.packaged_at IS NULL`.
 - `--full` prepares all queued jobs where `green_apply.packaged_at IS NULL`.
 - `--limit` only applies to `--full` and caps how many queued jobs are processed.
@@ -153,6 +154,8 @@
 - Loads `prompt1.txt` and injects one job at a time.
 - Filters out trivial questions using the labels found in `src/scoring/enrichment_display/`.
 - Loads the last 10 accepted applications and injects them into the prompt as context examples.
+- Dispatches Gemini requests asynchronously (rate-limited), so multiple queued jobs can be prepared in parallel.
+- Prints `job_id`, `title`, and `url` as each model response arrives.
 - Sends the remaining non-trivial questions to the AI API, then opens one `nvim` review buffer containing the job description, recent accepted applications, and editable `Text_Area` and `Input_Text` answers before storing the approved response, prompt name, model name, and `packaged_at` marker in `green_apply`.
 - Stores every accepted editable answer in `green_apply_answers` so future prompts can reuse the latest examples.
 - Leaves failed API calls eligible for retry by keeping `packaged_at IS NULL`.

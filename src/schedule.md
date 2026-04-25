@@ -96,6 +96,11 @@ Tasks:
 
 - push for ashby addition
 
+## April 24th
+
+- fixed score jobs bug in psycopg connection parameters.
+- 
+
 ## Next things
 
 - candidate_filter needs to do the regex inside of psql because It takes far too long outside.

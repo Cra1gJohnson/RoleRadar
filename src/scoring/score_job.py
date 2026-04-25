@@ -445,10 +445,10 @@ def persist_score(job_id: int, scores: ScoreBreakdown, response_text: str) -> No
                 cur.execute(
                     """
                     UPDATE green_enrich
-                    SET scored = TRUE,
+                    SET scored = TRUE
                     WHERE job_id = %s
                     """,
-                    (job_id),
+                    (job_id,),
                 )
             conn.commit()
         except Exception:

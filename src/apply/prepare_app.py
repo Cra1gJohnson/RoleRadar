@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -22,7 +23,8 @@ from scoring.utility.green_as_json import parse_application_questions
 
 load_shared_env()
 
-DEFAULT_RATE_PER_MINUTE = 12
+DEFAULT_RATE_PER_MINUTE = 24
+DEFAULT_MAX_CONCURRENCY = 8
 MODEL_NAME = "gemini-2.5-flash"
 PROMPT_FILE_NAME = "prompt1.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
@@ -152,6 +154,43 @@ class EvenRateLimiter:
         self.next_dispatch_at = max(self.next_dispatch_at + self.dispatch_interval, now)
 
 
+class AsyncEvenRateLimiter:
+    """Async variant of the even dispatch limiter."""
+
+    def __init__(self, rate_per_minute: int) -> None:
+        self.dispatch_interval = 60.0 / rate_per_minute
+        self.next_dispatch_at = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            sleep_seconds = self.next_dispatch_at - now
+            if sleep_seconds > 0:
+                await asyncio.sleep(sleep_seconds)
+                now = time.monotonic()
+
+            self.next_dispatch_at = max(self.next_dispatch_at + self.dispatch_interval, now)
+
+
+@dataclass(frozen=True)
+class PendingPromptRequest:
+    """One prepared Gemini request waiting to be dispatched."""
+
+    job: ApplicationPrepJob
+    prompt: str
+    recent_applications: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PromptRequestResult:
+    """One completed Gemini request, successful or failed."""
+
+    request: PendingPromptRequest
+    response_text: Optional[str] = None
+    error: Optional[str] = None
+
+
 def db_connect(autocommit: bool = True) -> psycopg.Connection:
     """Create a PostgreSQL connection using the shared env-based settings."""
     return psycopg.connect(
@@ -194,6 +233,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_RATE_PER_MINUTE,
         help="Maximum number of AI requests to start per 60 seconds",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENCY,
+        help="Maximum number of in-flight Gemini requests",
     )
     return parser.parse_args()
 
@@ -621,9 +666,11 @@ def fetch_jobs_to_prepare(
     limit: Optional[int],
 ) -> list[ApplicationPrepJob]:
     """Load queued jobs that still need application preparation."""
-    packaged_clause = ""
+    where_clauses = ["ga.submitted_at IS NULL"]
     if mode in {"test", "full"}:
-        packaged_clause = "WHERE ga.packaged_at IS NULL"
+        where_clauses.insert(0, "ga.packaged_at IS NULL")
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}"
 
     query = """
         SELECT
@@ -644,10 +691,9 @@ def fetch_jobs_to_prepare(
           ON ge.job_id = ga.job_id
         JOIN green_score AS gs
           ON gs.job_id = ga.job_id
-        {packaged_clause}
-        AND ga.submitted_at IS NULL
+        {where_clause}
         ORDER BY gs.overall DESC, ga.job_id ASC
-    """.format(packaged_clause=packaged_clause)
+    """.format(where_clause=where_sql)
 
     params: list[Any] = []
     if mode == "test":
@@ -744,6 +790,69 @@ def request_ai_response(client: Any, prompt: str) -> str:
     return response_text
 
 
+async def request_ai_response_async(client: Any, prompt: str) -> str:
+    """Send the prep prompt asynchronously when async client support is available."""
+    aio_client = getattr(client, "aio", None)
+    if aio_client is None or not hasattr(aio_client, "models"):
+        return await asyncio.to_thread(request_ai_response, client, prompt)
+
+    from google.genai import types
+
+    response = await aio_client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            responseMimeType="application/json",
+        ),
+    )
+    response_text = getattr(response, "text", None)
+    if not isinstance(response_text, str) or not response_text.strip():
+        raise ValueError("Gemini returned an empty response")
+    return response_text
+
+
+async def dispatch_prompt_requests(
+    client: Any,
+    requests: list[PendingPromptRequest],
+    rate_per_minute: int,
+    max_concurrency: int,
+) -> list[PromptRequestResult]:
+    """Dispatch Gemini requests concurrently, respecting rate and concurrency limits."""
+    if not requests:
+        return []
+
+    limiter = AsyncEvenRateLimiter(rate_per_minute=rate_per_minute)
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def run_one(request: PendingPromptRequest) -> PromptRequestResult:
+        async with semaphore:
+            await limiter.acquire()
+            try:
+                response_text = await request_ai_response_async(client, request.prompt)
+            except Exception as exc:
+                return PromptRequestResult(
+                    request=request,
+                    error=str(exc),
+                )
+
+            print(
+                "response_received "
+                f"job_id={request.job.job_id} "
+                f"title={request.job.title or 'N/A'} "
+                f"url={request.job.url or 'N/A'}"
+            )
+            return PromptRequestResult(
+                request=request,
+                response_text=response_text,
+            )
+
+    tasks = [asyncio.create_task(run_one(request)) for request in requests]
+    results: list[PromptRequestResult] = []
+    for completed in asyncio.as_completed(tasks):
+        results.append(await completed)
+    return results
+
+
 def build_empty_response(job_id: int) -> str:
     """Create a deterministic empty-answer response when no non-trivial prompts remain."""
     return json.dumps(
@@ -831,11 +940,15 @@ def count_jobs_to_prepare(conn: psycopg.Connection, mode: str) -> int:
     return int(row[0]) if row else 0
 
 
-def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) -> PrepSummary:
+def prepare_applications(
+    mode: str,
+    limit: Optional[int],
+    rate_per_minute: int,
+    max_concurrency: int,
+) -> PrepSummary:
     """Prepare queued applications with AI-generated answers."""
     prompt_template = load_prompt_template()
     client = build_client()
-    rate_limiter = EvenRateLimiter(rate_per_minute=rate_per_minute)
     summary = PrepSummary()
 
     with db_connect() as conn:
@@ -849,9 +962,11 @@ def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) 
 
         print(
             f"mode={mode} selected={len(jobs)} limit={'all' if limit is None else limit} "
-            f"rate_per_minute={rate_per_minute} model={MODEL_NAME}"
+            f"rate_per_minute={rate_per_minute} max_concurrency={max_concurrency} "
+            f"model={MODEL_NAME}"
         )
 
+        pending_requests: list[PendingPromptRequest] = []
         for job in jobs:
             job_payload = build_job_payload(job)
             filtered_questions = job_payload["application_questions"]
@@ -871,12 +986,35 @@ def prepare_applications(mode: str, limit: Optional[int], rate_per_minute: int) 
                 continue
 
             prompt = render_prompt(prompt_template, job_payload, recent_applications)
+            pending_requests.append(
+                PendingPromptRequest(
+                    job=job,
+                    prompt=prompt,
+                    recent_applications=recent_applications,
+                )
+            )
 
-            try:
-                rate_limiter.acquire()
-                response_text = request_ai_response(client, prompt)
-            except Exception as exc:
-                print(f"job_id={job.job_id} api failed: {exc}")
+        api_results = asyncio.run(
+            dispatch_prompt_requests(
+                client=client,
+                requests=pending_requests,
+                rate_per_minute=rate_per_minute,
+                max_concurrency=max_concurrency,
+            )
+        )
+
+        for api_result in api_results:
+            job = api_result.request.job
+            recent_applications = api_result.request.recent_applications
+            response_text = api_result.response_text
+
+            if api_result.error is not None:
+                print(f"job_id={job.job_id} api failed: {api_result.error}")
+                summary.api_failures += 1
+                continue
+
+            if response_text is None:
+                print(f"job_id={job.job_id} api failed: empty async result")
                 summary.api_failures += 1
                 continue
 
@@ -957,6 +1095,9 @@ def main() -> None:
     if args.rate_per_minute <= 0:
         print("rate-per-minute must be greater than 0")
         raise SystemExit(1)
+    if args.max_concurrency <= 0:
+        print("max-concurrency must be greater than 0")
+        raise SystemExit(1)
 
     if args.test:
         mode = "test"
@@ -970,6 +1111,7 @@ def main() -> None:
             mode=mode,
             limit=resolve_limit(args.limit),
             rate_per_minute=args.rate_per_minute,
+            max_concurrency=args.max_concurrency,
         )
     except (OSError, ValueError, psycopg.Error) as exc:
         print(str(exc))
