@@ -37,7 +37,12 @@ class DeleteSummary:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the stale-job deleter."""
     parser = argparse.ArgumentParser(
-        description="Delete Greenhouse jobs whose enrichment request_status is 404."
+        description="Delete Greenhouse jobs whose enrichment request_status is stale."
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Delete all jobs with a recorded non-200 request_status instead of only 404s",
     )
     parser.add_argument(
         "--limit",
@@ -73,14 +78,20 @@ def db_connect(autocommit: bool = True) -> psycopg.Connection:
 def fetch_stale_job_ids(
     conn: psycopg.Connection,
     limit: Optional[int],
+    delete_all_non_200: bool,
 ) -> list[int]:
-    """Load job ids whose enrichment row is marked as a terminal 404."""
+    """Load job ids whose enrichment row is marked as stale."""
+    status_filter = (
+        "ge.request_status IS NOT NULL AND ge.request_status <> 200"
+        if delete_all_non_200
+        else "ge.request_status = 404"
+    )
     query = """
         SELECT ge.job_id
         FROM green_enrich AS ge
-        WHERE ge.request_status = 404
+        WHERE {status_filter}
         ORDER BY ge.job_id
-    """
+    """.format(status_filter=status_filter)
     params: tuple[object, ...] = ()
     if limit is not None:
         query += " LIMIT %s"
@@ -149,13 +160,18 @@ def delete_jobs(conn: psycopg.Connection, job_ids: list[int]) -> int:
     return len(deleted_rows)
 
 
-def process_cleanup(limit: Optional[int], batch_size: int, dry_run: bool) -> DeleteSummary:
+def process_cleanup(
+    limit: Optional[int],
+    batch_size: int,
+    dry_run: bool,
+    delete_all_non_200: bool,
+) -> DeleteSummary:
     """Delete stale jobs in batches and rely on foreign-key cascades for cleanup."""
     summary = DeleteSummary()
 
     with db_connect(autocommit=False) as conn:
         verify_cascade_contract(conn)
-        stale_job_ids = fetch_stale_job_ids(conn, limit)
+        stale_job_ids = fetch_stale_job_ids(conn, limit, delete_all_non_200)
         summary.scanned_count = len(stale_job_ids)
 
         if not stale_job_ids:
@@ -196,6 +212,7 @@ def main() -> None:
             limit=args.limit,
             batch_size=args.batch_size,
             dry_run=args.dry_run,
+            delete_all_non_200=args.all,
         )
     except psycopg.Error as exc:
         print(f"Database error in delete_404_jobs: {exc}")

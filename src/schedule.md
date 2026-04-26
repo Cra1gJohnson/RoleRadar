@@ -99,7 +99,12 @@ Tasks:
 ## April 24th
 
 - fixed score jobs bug in psycopg connection parameters.
-- 
+
+## April 25th
+
+- improve prepare_app to be async and add token and cost calculation
+- implement text_area and input_text storage and context usage in DB and prompt
+- refresh package review with ability change in nvim EDITOR before storage
 
 ## Next things
 

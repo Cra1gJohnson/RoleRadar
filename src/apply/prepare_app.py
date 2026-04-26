@@ -26,12 +26,16 @@ load_shared_env()
 DEFAULT_RATE_PER_MINUTE = 24
 DEFAULT_MAX_CONCURRENCY = 8
 MODEL_NAME = "gemini-2.5-flash"
+INPUT_COST_PER_MILLION_TOKENS = 0.30
+OUTPUT_COST_PER_MILLION_TOKENS = 2.50
+INPUT_COST_PER_TOKEN = INPUT_COST_PER_MILLION_TOKENS / 1_000_000
+OUTPUT_COST_PER_TOKEN = OUTPUT_COST_PER_MILLION_TOKENS / 1_000_000
 PROMPT_FILE_NAME = "prompt1.txt"
 PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
 ENRICHMENT_DISPLAY_DIR = SRC_ROOT / "scoring" / "enrichment_display"
 TEXTAREA_HISTORY_TABLE = "green_apply_answers"
-RECENT_APPLICATION_LIMIT = 10
-EDITABLE_ANSWER_STYLES = {"text_area", "textarea", "input_text", "input"}
+ACCEPTED_ANSWER_CONTEXT_LIMIT = 20
+EDITABLE_ANSWER_STYLES = {"text_area", "input_text"}
 
 SOURCE_TRIVIAL_QUESTION_LABELS = {
     "first name",
@@ -105,7 +109,6 @@ class PreparedApplication:
     job: ApplicationPrepJob
     response_text: str
     response_payload: Optional[dict[str, Any]]
-    recent_applications: list[dict[str, Any]]
     accepted_editable_answers: list[AcceptedEditableAnswer] = field(default_factory=list)
     count_as_packaged: bool = True
 
@@ -120,6 +123,12 @@ class PrepSummary:
     parse_failures: int = 0
     review_failures: int = 0
     database_failures: int = 0
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
+    prompt_cost: float = 0.0
+    response_cost: float = 0.0
+    total_cost: float = 0.0
 
     @property
     def failed(self) -> int:
@@ -179,7 +188,6 @@ class PendingPromptRequest:
 
     job: ApplicationPrepJob
     prompt: str
-    recent_applications: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -188,7 +196,20 @@ class PromptRequestResult:
 
     request: PendingPromptRequest
     response_text: Optional[str] = None
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class GeminiPrepResponse:
+    """Raw Gemini response text and token accounting."""
+
+    response_text: str
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
 
 
 def db_connect(autocommit: bool = True) -> psycopg.Connection:
@@ -361,96 +382,40 @@ def ensure_textarea_answer_history_table(conn: psycopg.Connection) -> None:
         )
 
 
-def fetch_recent_applications(
+def fetch_accepted_answer_context(
     conn: psycopg.Connection,
-    limit: int = RECENT_APPLICATION_LIMIT,
+    limit: int = ACCEPTED_ANSWER_CONTEXT_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Load the most recent accepted applications for prompt context."""
+    """Load recent accepted answers for model-only prompt context."""
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            WITH recent_jobs AS (
-                SELECT
-                    job_id,
-                    MAX(accepted_at) AS last_accepted_at
-                FROM {TEXTAREA_HISTORY_TABLE}
-                GROUP BY job_id
-                ORDER BY last_accepted_at DESC, job_id DESC
-                LIMIT %s
-            )
             SELECT
-                recent_jobs.job_id,
-                gj.company_name,
-                gj.title,
-                gj.location,
-                ge.description,
-                gaa.question_label,
-                gaa.answer_style,
-                gaa.answer_text,
-                gaa.prompt,
-                gaa.model,
-                gaa.accepted_at
-            FROM recent_jobs
-            JOIN green_job AS gj
-              ON gj.job_id = recent_jobs.job_id
-            LEFT JOIN green_enrich AS ge
-              ON ge.job_id = recent_jobs.job_id
-            JOIN {TEXTAREA_HISTORY_TABLE} AS gaa
-              ON gaa.job_id = recent_jobs.job_id
-            ORDER BY recent_jobs.last_accepted_at DESC,
-                     recent_jobs.job_id DESC,
-                     gaa.accepted_at ASC,
-                     gaa.answer_id ASC
+                question_label,
+                answer_text,
+                answer_style
+            FROM {TEXTAREA_HISTORY_TABLE}
+            ORDER BY accepted_at DESC, answer_id DESC
+            LIMIT %s
             """,
             (limit,),
         )
         rows = cur.fetchall()
 
-    applications: list[dict[str, Any]] = []
-    current_job_id: Optional[int] = None
-    current_application: Optional[dict[str, Any]] = None
-
-    def serialize_value(value: Any) -> Any:
-        if hasattr(value, "isoformat"):
-            return value.isoformat(sep=" ", timespec="seconds")
-        return value
-
-    for row in rows:
-        job_id = row[0]
-        if job_id != current_job_id:
-            current_job_id = job_id
-            current_application = {
-                "job_id": job_id,
-                "company_name": serialize_value(row[1]),
-                "title": serialize_value(row[2]),
-                "location": serialize_value(row[3]),
-                "description": serialize_value(row[4]),
-                "answers": [],
-                "last_accepted_at": serialize_value(row[10]),
-            }
-            applications.append(current_application)
-
-        if current_application is None:
-            continue
-
-        current_application["answers"].append(
-            {
-                "question_label": serialize_value(row[5]),
-                "answer_style": serialize_value(row[6]),
-                "answer_text": serialize_value(row[7]),
-                "prompt": serialize_value(row[8]),
-                "model": serialize_value(row[9]),
-                "accepted_at": serialize_value(row[10]),
-            }
-        )
-
-    return applications
+    return [
+        {
+            "question_label": row[0],
+            "answer_text": row[1],
+            "answer_style": row[2],
+        }
+        for row in rows
+    ]
 
 
-def format_recent_applications(entries: list[dict[str, Any]]) -> str:
-    """Render recent accepted applications as prompt context."""
+def format_accepted_answer_context(entries: list[dict[str, Any]]) -> str:
+    """Render accepted answers as compact JSON prompt context."""
     if not entries:
-        return "No accepted applications are available yet."
+        return "[]"
 
     return json.dumps(entries, ensure_ascii=False, indent=2)
 
@@ -480,18 +445,14 @@ def extract_editable_answers(response_payload: dict[str, Any]) -> list[dict[str,
 def build_review_editor_payload(
     job: ApplicationPrepJob,
     response_payload: dict[str, Any],
-    recent_applications: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Build the reduced review document opened in nvim."""
     return {
-        "job_description": job.description,
         "instructions": [
             "Edit only the editable_answers array.",
             "Leave question_label values unchanged.",
-            "Do not modify job_description or recent_applications sections.",
         ],
         "editable_answers": extract_editable_answers(response_payload),
-        "recent_applications": recent_applications,
     }
 
 
@@ -525,12 +486,20 @@ def open_response_in_editor(review_payload: dict[str, Any]) -> dict[str, Any]:
 def prompt_for_editable_review(job: ApplicationPrepJob, answer_count: int) -> bool:
     """Ask whether the user wants to edit the staged editable answers."""
     print()
-    print(
-        f"job_id={job.job_id} has {answer_count} editable answer(s) ready for review."
-    )
+    print(f"Job title: {job.title or 'N/A'}")
+    print(f"Job URL: {job.url or 'N/A'}")
+    print(f"Job ID: {job.job_id}")
+    if answer_count:
+        print(f"Questions that need approval: {answer_count}")
+    else:
+        print("No questions need approval")
+
     while True:
-        choice = input("Edit answers now? [y/n]: ").strip().lower()
+        choice = input("Edit the Model response? y or n : ").strip().lower()
         if choice == "y":
+            if answer_count == 0:
+                print("No editable model answers are available for this response.")
+                return False
             return True
         if choice == "n":
             return False
@@ -623,7 +592,6 @@ def merge_reviewed_answers(
 def review_response_payload(
     job: ApplicationPrepJob,
     response_payload: dict[str, Any],
-    recent_applications: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], int]:
     """Optionally open one editor for the editable answers in a staged response."""
     editable_answers = extract_editable_answers(response_payload)
@@ -633,7 +601,7 @@ def review_response_payload(
     if not prompt_for_editable_review(job, len(editable_answers)):
         return response_payload, 0
 
-    review_payload = build_review_editor_payload(job, response_payload, recent_applications)
+    review_payload = build_review_editor_payload(job, response_payload)
 
     while True:
         try:
@@ -747,13 +715,13 @@ def load_prompt_template() -> str:
 def render_prompt(
     prompt_template: str,
     job_payload: dict[str, Any],
-    recent_applications: list[dict[str, Any]],
+    accepted_answer_context: list[dict[str, Any]],
 ) -> str:
-    """Render the final prompt by injecting the job JSON and application context."""
+    """Render the final prompt by injecting job JSON and accepted-answer context."""
     rendered_job = json.dumps(job_payload, ensure_ascii=False, indent=2)
-    rendered_context = format_recent_applications(recent_applications)
+    rendered_answer_context = format_accepted_answer_context(accepted_answer_context)
     return (
-        prompt_template.replace("{RECENT APPLICATIONS HERE}", rendered_context)
+        prompt_template.replace("{ACCEPTED ANSWERS HERE}", rendered_answer_context)
         .replace("{JOB JSON HERE}", rendered_job)
     )
 
@@ -773,7 +741,42 @@ def build_client() -> Any:
     return genai.Client(api_key=api_key)
 
 
-def request_ai_response(client: Any, prompt: str) -> str:
+def extract_usage_metadata(response: Any) -> tuple[int, int]:
+    """Extract prompt and response token counts from a Gemini response."""
+    metadata = getattr(response, "usage_metadata", None)
+    if metadata is None:
+        metadata = getattr(response, "usageMetadata", None)
+    if metadata is None:
+        return 0, 0
+    return (
+        getattr(metadata, "prompt_token_count", 0) or 0,
+        getattr(metadata, "candidates_token_count", 0) or 0,
+    )
+
+
+def extract_total_token_count(response: Any, prompt_tokens: int, response_tokens: int) -> int:
+    """Return total tokens from metadata, falling back to prompt plus response."""
+    return (
+        getattr(getattr(response, "usage_metadata", None), "total_token_count", 0)
+        or getattr(getattr(response, "usageMetadata", None), "total_token_count", 0)
+        or prompt_tokens + response_tokens
+    )
+
+
+def token_cost(tokens: int, per_token_rate: float) -> float:
+    """Calculate the dollar cost for a token count."""
+    return tokens * per_token_rate
+
+
+def response_total_cost(response: PromptRequestResult) -> float:
+    """Calculate the total Gemini cost for one prepared application response."""
+    return token_cost(response.prompt_tokens, INPUT_COST_PER_TOKEN) + token_cost(
+        response.response_tokens,
+        OUTPUT_COST_PER_TOKEN,
+    )
+
+
+def request_ai_response(client: Any, prompt: str) -> GeminiPrepResponse:
     """Send the prep prompt to Gemini and return the raw response text."""
     from google.genai import types
 
@@ -787,10 +790,16 @@ def request_ai_response(client: Any, prompt: str) -> str:
     response_text = getattr(response, "text", None)
     if not isinstance(response_text, str) or not response_text.strip():
         raise ValueError("Gemini returned an empty response")
-    return response_text
+    prompt_tokens, response_tokens = extract_usage_metadata(response)
+    return GeminiPrepResponse(
+        response_text=response_text,
+        prompt_tokens=prompt_tokens,
+        response_tokens=response_tokens,
+        total_tokens=extract_total_token_count(response, prompt_tokens, response_tokens),
+    )
 
 
-async def request_ai_response_async(client: Any, prompt: str) -> str:
+async def request_ai_response_async(client: Any, prompt: str) -> GeminiPrepResponse:
     """Send the prep prompt asynchronously when async client support is available."""
     aio_client = getattr(client, "aio", None)
     if aio_client is None or not hasattr(aio_client, "models"):
@@ -808,18 +817,107 @@ async def request_ai_response_async(client: Any, prompt: str) -> str:
     response_text = getattr(response, "text", None)
     if not isinstance(response_text, str) or not response_text.strip():
         raise ValueError("Gemini returned an empty response")
-    return response_text
+    prompt_tokens, response_tokens = extract_usage_metadata(response)
+    return GeminiPrepResponse(
+        response_text=response_text,
+        prompt_tokens=prompt_tokens,
+        response_tokens=response_tokens,
+        total_tokens=extract_total_token_count(response, prompt_tokens, response_tokens),
+    )
 
 
-async def dispatch_prompt_requests(
+def process_prompt_result(
+    conn: psycopg.Connection,
+    api_result: PromptRequestResult,
+    summary: PrepSummary,
+) -> None:
+    """Review and persist one completed model response."""
+    job = api_result.request.job
+    response_text = api_result.response_text
+
+    summary.prompt_tokens += api_result.prompt_tokens
+    summary.response_tokens += api_result.response_tokens
+    summary.total_tokens += api_result.total_tokens
+    prompt_cost = token_cost(api_result.prompt_tokens, INPUT_COST_PER_TOKEN)
+    response_cost = token_cost(api_result.response_tokens, OUTPUT_COST_PER_TOKEN)
+    summary.prompt_cost += prompt_cost
+    summary.response_cost += response_cost
+    summary.total_cost += prompt_cost + response_cost
+
+    if api_result.error is not None:
+        print(f"job_id={job.job_id} api failed: {api_result.error}")
+        summary.api_failures += 1
+        return
+
+    if response_text is None:
+        print(f"job_id={job.job_id} api failed: empty async result")
+        summary.api_failures += 1
+        return
+
+    try:
+        response_payload = parse_ai_response(response_text, job.job_id)
+    except Exception as exc:
+        print(f"job_id={job.job_id} parse failed: {exc}")
+        summary.parse_failures += 1
+        try:
+            persist_response(conn, job.job_id, response_text, [])
+        except psycopg.Error as db_exc:
+            print(f"job_id={job.job_id} database failed: {db_exc}")
+            summary.database_failures += 1
+            return
+        print(f"job_id={job.job_id} stored raw response after parse failure")
+        return
+
+    try:
+        final_response_payload, _reviewed_count = review_response_payload(
+            job,
+            response_payload,
+        )
+    except RuntimeError as exc:
+        print(str(exc))
+        summary.review_failures += 1
+        return
+
+    final_response_text = json.dumps(
+        final_response_payload,
+        ensure_ascii=False,
+        indent=2,
+    )
+    accepted_editable_answers = collect_accepted_editable_answers(
+        job.job_id,
+        final_response_payload,
+    )
+
+    try:
+        persist_response(
+            conn,
+            job.job_id,
+            final_response_text,
+            accepted_editable_answers,
+        )
+    except psycopg.Error as exc:
+        print(f"job_id={job.job_id} database failed: {exc}")
+        summary.database_failures += 1
+        return
+
+    summary.packaged += 1
+    print(
+        f"Job ID: {job.job_id} Packaged and Ready to submit "
+        f"(cost ${response_total_cost(api_result):.6f})"
+    )
+
+
+async def dispatch_and_process_prompt_requests(
     client: Any,
     requests: list[PendingPromptRequest],
     rate_per_minute: int,
     max_concurrency: int,
-) -> list[PromptRequestResult]:
-    """Dispatch Gemini requests concurrently, respecting rate and concurrency limits."""
+    conn: psycopg.Connection,
+    summary: PrepSummary,
+) -> None:
+    """Dispatch requests concurrently and review each response as it arrives."""
     if not requests:
-        return []
+        return
 
     limiter = AsyncEvenRateLimiter(rate_per_minute=rate_per_minute)
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -828,29 +926,25 @@ async def dispatch_prompt_requests(
         async with semaphore:
             await limiter.acquire()
             try:
-                response_text = await request_ai_response_async(client, request.prompt)
+                response = await request_ai_response_async(client, request.prompt)
             except Exception as exc:
                 return PromptRequestResult(
                     request=request,
                     error=str(exc),
                 )
 
-            print(
-                "response_received "
-                f"job_id={request.job.job_id} "
-                f"title={request.job.title or 'N/A'} "
-                f"url={request.job.url or 'N/A'}"
-            )
             return PromptRequestResult(
                 request=request,
-                response_text=response_text,
+                response_text=response.response_text,
+                prompt_tokens=response.prompt_tokens,
+                response_tokens=response.response_tokens,
+                total_tokens=response.total_tokens,
             )
 
     tasks = [asyncio.create_task(run_one(request)) for request in requests]
-    results: list[PromptRequestResult] = []
     for completed in asyncio.as_completed(tasks):
-        results.append(await completed)
-    return results
+        result = await completed
+        await asyncio.to_thread(process_prompt_result, conn, result, summary)
 
 
 def build_empty_response(job_id: int) -> str:
@@ -966,11 +1060,11 @@ def prepare_applications(
             f"model={MODEL_NAME}"
         )
 
+        accepted_answer_context = fetch_accepted_answer_context(conn)
         pending_requests: list[PendingPromptRequest] = []
         for job in jobs:
             job_payload = build_job_payload(job)
             filtered_questions = job_payload["application_questions"]
-            recent_applications = fetch_recent_applications(conn)
 
             if not filtered_questions:
                 empty_response = build_empty_response(job.job_id)
@@ -985,96 +1079,24 @@ def prepare_applications(
                 print(f"job_id={job.job_id} packaged (no non-trivial questions)")
                 continue
 
-            prompt = render_prompt(prompt_template, job_payload, recent_applications)
+            prompt = render_prompt(prompt_template, job_payload, accepted_answer_context)
             pending_requests.append(
                 PendingPromptRequest(
                     job=job,
                     prompt=prompt,
-                    recent_applications=recent_applications,
                 )
             )
 
-        api_results = asyncio.run(
-            dispatch_prompt_requests(
+        asyncio.run(
+            dispatch_and_process_prompt_requests(
                 client=client,
                 requests=pending_requests,
                 rate_per_minute=rate_per_minute,
                 max_concurrency=max_concurrency,
+                conn=conn,
+                summary=summary,
             )
         )
-
-        for api_result in api_results:
-            job = api_result.request.job
-            recent_applications = api_result.request.recent_applications
-            response_text = api_result.response_text
-
-            if api_result.error is not None:
-                print(f"job_id={job.job_id} api failed: {api_result.error}")
-                summary.api_failures += 1
-                continue
-
-            if response_text is None:
-                print(f"job_id={job.job_id} api failed: empty async result")
-                summary.api_failures += 1
-                continue
-
-            try:
-                response_payload = parse_ai_response(response_text, job.job_id)
-            except Exception as exc:
-                print(f"job_id={job.job_id} parse failed: {exc}")
-                summary.parse_failures += 1
-                try:
-                    persist_response(conn, job.job_id, response_text, [])
-                except psycopg.Error as db_exc:
-                    print(f"job_id={job.job_id} database failed: {db_exc}")
-                    summary.database_failures += 1
-                    continue
-                print(f"job_id={job.job_id} stored raw response after parse failure")
-                continue
-
-            accepted_editable_answers: list[AcceptedEditableAnswer] = []
-            editable_count = len(extract_editable_answers(response_payload))
-            final_response_text = response_text
-
-            if editable_count > 0:
-                try:
-                    final_response_payload, editable_count = review_response_payload(
-                        job,
-                        response_payload,
-                        recent_applications,
-                    )
-                except RuntimeError as exc:
-                    print(str(exc))
-                    summary.review_failures += 1
-                    continue
-
-                final_response_text = json.dumps(
-                    final_response_payload,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                accepted_editable_answers = collect_accepted_editable_answers(
-                    job.job_id,
-                    final_response_payload,
-                )
-
-            try:
-                persist_response(
-                    conn,
-                    job.job_id,
-                    final_response_text,
-                    accepted_editable_answers,
-                )
-            except psycopg.Error as exc:
-                print(f"job_id={job.job_id} database failed: {exc}")
-                summary.database_failures += 1
-                continue
-
-            summary.packaged += 1
-            if editable_count > 0:
-                print(f"job_id={job.job_id} packaged with {editable_count} editable answer(s)")
-            else:
-                print(f"job_id={job.job_id} packaged")
 
     return summary
 
@@ -1121,7 +1143,13 @@ def main() -> None:
         f"Final summary: selected={summary.selected} packaged={summary.packaged} "
         f"api_failures={summary.api_failures} parse_failures={summary.parse_failures} "
         f"review_failures={summary.review_failures} "
-        f"database_failures={summary.database_failures}"
+        f"database_failures={summary.database_failures} "
+        f"input_tokens={summary.prompt_tokens} "
+        f"input_cost=${summary.prompt_cost:.6f} "
+        f"output_tokens={summary.response_tokens} "
+        f"output_cost=${summary.response_cost:.6f} "
+        f"total_tokens={summary.total_tokens} "
+        f"total_cost=${summary.total_cost:.6f}"
     )
     if not summary.success:
         raise SystemExit(1)

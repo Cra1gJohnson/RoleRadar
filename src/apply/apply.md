@@ -153,11 +153,13 @@
 - Joins `green_job`, `green_enrich`, and `green_score` for application context.
 - Loads `prompt1.txt` and injects one job at a time.
 - Filters out trivial questions using the labels found in `src/scoring/enrichment_display/`.
-- Loads the last 10 accepted applications and injects them into the prompt as context examples.
+- Injects up to 20 recently accepted `green_apply_answers` rows into the prompt for model-only context.
 - Dispatches Gemini requests asynchronously (rate-limited), so multiple queued jobs can be prepared in parallel.
-- Prints `job_id`, `title`, and `url` as each model response arrives.
-- Sends the remaining non-trivial questions to the AI API, then opens one `nvim` review buffer containing the job description, recent accepted applications, and editable `Text_Area` and `Input_Text` answers before storing the approved response, prompt name, model name, and `packaged_at` marker in `green_apply`.
-- Stores every accepted editable answer in `green_apply_answers` so future prompts can reuse the latest examples.
+- Reviews each model response linearly as it arrives while later requests can continue in flight.
+- Prints the job title, URL, ID, and editable-question count before asking whether to edit the model response.
+- Opens one `nvim` review buffer containing only editable `Text_Area` and `Input_Text` answers before storing the approved response, prompt name, model name, and `packaged_at` marker in `green_apply`.
+- Stores accepted `Text_Area` and `Input_Text` answers in `green_apply_answers`.
+- Prints per-application Gemini token cost after packaging and aggregate input/output token costs in the final summary using Gemini 2.5 Flash paid text rates.
 - Leaves failed API calls eligible for retry by keeping `packaged_at IS NULL`.
 
 ## Prompt Context for Future Work
