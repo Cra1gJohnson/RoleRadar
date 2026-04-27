@@ -106,6 +106,10 @@ Tasks:
 - implement text_area and input_text storage and context usage in DB and prompt
 - refresh package review with ability change in nvim EDITOR before storage
 
+## April 26th
+
+- found bug in app preparation
+
 ## Next things
 
 - candidate_filter needs to do the regex inside of psql because It takes far too long outside.

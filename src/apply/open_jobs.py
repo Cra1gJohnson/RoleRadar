@@ -1,14 +1,15 @@
 import argparse
+import contextlib
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 from utility import backfill_application
 import requests
 
-from handle_jobs import reciever
 import psycopg
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ from env_loader import load_shared_env
 load_shared_env()
 
 DEFAULT_LIMIT = 1
+HANDLE_LOG_DIR = Path(__file__).resolve().parent / "logs"
 
 # Browser/CDP behavior now lives in handle_jobs.
 # DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
@@ -47,6 +49,8 @@ class JobsPackageItem:
     url: str
     standard_job: bool
     response: Any
+    resume: str | None
+    cover_letter: str | None
 
 
 @dataclass(frozen=True)
@@ -146,13 +150,13 @@ def validate_url(job_id: int, url: Any) -> str:
 
 def validate_job_row(row: Any, row_index: int) -> JobsPackageItem:
     """Convert one database row into a validated package item."""
-    if not isinstance(row, tuple) or len(row) < 4:
+    if not isinstance(row, tuple) or len(row) < 6:
         raise ValueError(
             f"Row {row_index} from the package query did not return the expected shape "
-            f"(job_id, title, url, response). Got: {row!r}"
+            f"(job_id, title, url, response, resume, cover_letter). Got: {row!r}"
         )
 
-    job_id, title, url, response = row[:4]
+    job_id, title, url, response, resume, cover_letter = row[:6]
 
     if not isinstance(job_id, int) or job_id <= 0:
         raise ValueError(
@@ -169,6 +173,12 @@ def validate_job_row(row: Any, row_index: int) -> JobsPackageItem:
         url=validated_url,
         standard_job=standard_job,
         response=response,
+        resume=normalize_prompt_text(resume) or None,
+        cover_letter=(
+            cover_letter.strip()
+            if isinstance(cover_letter, str) and cover_letter.strip()
+            else None
+        ),
     )
 
 
@@ -184,7 +194,9 @@ def fetch_jobs_package(conn: psycopg.Connection, limit: int) -> JobsPackage:
                 ga.job_id,
                 gj.title,
                 gj.url,
-                ga.response
+                ga.response,
+                ga.resume,
+                ga.cover_letter
             FROM green_apply AS ga
             JOIN green_job AS gj
               ON gj.job_id = ga.job_id
@@ -240,6 +252,25 @@ def mark_job_request_status(conn: psycopg.Connection, job_id: int, request_statu
         )
 
 
+def handle_job_log_path(job_id: int) -> Path:
+    """Return a timestamped log path for noisy Playwright handler output."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return HANDLE_LOG_DIR / f"handle_jobs_{timestamp}_{job_id}.log"
+
+
+def run_receiver_with_log(job: JobsPackageItem) -> Path:
+    """Run handle_jobs with stdout/stderr redirected to a per-job log file."""
+    from handle_jobs import reciever
+
+    HANDLE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = handle_job_log_path(job.job_id)
+    with log_path.open("w", encoding="utf-8") as log_file:
+        with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
+            reciever(JobsPackage(jobs=[job]))
+
+    return log_path
+
+
 def main() -> None:
     """CLI entrypoint for building the jobs_package."""
     args = parse_args()
@@ -266,11 +297,12 @@ def main() -> None:
                     )
                     continue
 
-                reciever(JobsPackage(jobs=[job]))
+                log_path = run_receiver_with_log(job)
                 print()
                 print(f"job_id={job.job_id}")
                 print(f"title={job.title or 'N/A'}")
                 print(f"url={job.url}")
+                print(f"handle log={log_path}")
 
                 while True:
                     submitted = input("Was the job submitted? [y/n]: ").strip().lower()

@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
+import cover
 from scoring.utility.green_as_json import parse_application_questions
 
 load_shared_env()
@@ -30,12 +32,26 @@ INPUT_COST_PER_MILLION_TOKENS = 0.30
 OUTPUT_COST_PER_MILLION_TOKENS = 2.50
 INPUT_COST_PER_TOKEN = INPUT_COST_PER_MILLION_TOKENS / 1_000_000
 OUTPUT_COST_PER_TOKEN = OUTPUT_COST_PER_MILLION_TOKENS / 1_000_000
-PROMPT_FILE_NAME = "prompt1.txt"
-PROMPT_PATH = Path(__file__).resolve().parent / PROMPT_FILE_NAME
+PROMPT_WITH_COVER_FILE_NAME = "prompt1.txt"
+PROMPT_WITHOUT_COVER_FILE_NAME = "prompt2.txt"
+APPLY_DIR = Path(__file__).resolve().parent
+DEFAULT_RESUME_PDF_PATH = SRC_ROOT.parent / "templates" / "resume" / "CPJohnson_resume.pdf"
 ENRICHMENT_DISPLAY_DIR = SRC_ROOT / "scoring" / "enrichment_display"
-TEXTAREA_HISTORY_TABLE = "green_apply_answers"
+TEXTAREA_HISTORY_TABLE = "apply_answers"
+COVER_HISTORY_TABLE = "apply_cover"
 ACCEPTED_ANSWER_CONTEXT_LIMIT = 20
 EDITABLE_ANSWER_STYLES = {"text_area", "input_text"}
+ANSWER_LABEL_KEY = "answer label"
+ANSWER_LABEL_ALIASES = (
+    "answer label",
+    "answer_label",
+    "answerLabel",
+    "answer text",
+    "answer_text",
+    "answered text",
+    "answered_text",
+    "answeredText",
+)
 
 SOURCE_TRIVIAL_QUESTION_LABELS = {
     "first name",
@@ -90,6 +106,7 @@ class ApplicationPrepJob:
     max_salary: Optional[int]
     overall: Optional[int]
     application_questions: Any
+    existing_cover_letter: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -98,8 +115,8 @@ class AcceptedEditableAnswer:
 
     job_id: int
     question_label: str
-    answer_style: str
-    answer_text: str
+    style: str
+    answer_label: str
 
 
 @dataclass
@@ -123,6 +140,7 @@ class PrepSummary:
     parse_failures: int = 0
     review_failures: int = 0
     database_failures: int = 0
+    cover_failures: int = 0
     prompt_tokens: int = 0
     response_tokens: int = 0
     total_tokens: int = 0
@@ -138,6 +156,7 @@ class PrepSummary:
             + self.parse_failures
             + self.review_failures
             + self.database_failures
+            + self.cover_failures
         )
 
     @property
@@ -188,6 +207,9 @@ class PendingPromptRequest:
 
     job: ApplicationPrepJob
     prompt: str
+    prompt_file_name: str
+    generate_cover_letter: bool
+    has_cover_letter_question: bool
 
 
 @dataclass(frozen=True)
@@ -298,6 +320,24 @@ def is_editable_answer(answer: Any) -> bool:
     return normalize_style_label(answer.get("style")) in EDITABLE_ANSWER_STYLES
 
 
+def has_cover_letter_question(application_questions: Any) -> bool:
+    """Return True when raw application questions include a cover letter field."""
+    if not isinstance(application_questions, list):
+        return False
+
+    pattern = re.compile(r"\bcover\W*letter\b", re.IGNORECASE)
+    for question in application_questions:
+        if not isinstance(question, dict):
+            continue
+
+        for key in ("label", "name", "question"):
+            value = question.get(key)
+            if isinstance(value, str) and pattern.search(value):
+                return True
+
+    return False
+
+
 @lru_cache(maxsize=1)
 def load_trivial_question_labels() -> set[str]:
     """Load the labels that should be removed before sending questions to Gemini."""
@@ -351,37 +391,6 @@ def filter_application_questions(application_questions: Any) -> list[dict[str, A
     return filtered_questions
 
 
-def ensure_textarea_answer_history_table(conn: psycopg.Connection) -> None:
-    """Create the accepted-textarea history table when it is missing."""
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TEXTAREA_HISTORY_TABLE} (
-                answer_id BIGSERIAL PRIMARY KEY,
-                job_id INTEGER NOT NULL REFERENCES green_job(job_id) ON DELETE CASCADE,
-                question_label TEXT NOT NULL,
-                answer_style TEXT NOT NULL DEFAULT 'Text_Area',
-                answer_text TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                model TEXT NOT NULL,
-                accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-        cur.execute(
-            f"""
-            ALTER TABLE {TEXTAREA_HISTORY_TABLE}
-            ADD COLUMN IF NOT EXISTS answer_style TEXT NOT NULL DEFAULT 'Text_Area'
-            """
-        )
-        cur.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS {TEXTAREA_HISTORY_TABLE}_accepted_at_idx
-            ON {TEXTAREA_HISTORY_TABLE} (accepted_at DESC, answer_id DESC)
-            """
-        )
-
-
 def fetch_accepted_answer_context(
     conn: psycopg.Connection,
     limit: int = ACCEPTED_ANSWER_CONTEXT_LIMIT,
@@ -392,8 +401,8 @@ def fetch_accepted_answer_context(
             f"""
             SELECT
                 question_label,
-                answer_text,
-                answer_style
+                answer_label,
+                style
             FROM {TEXTAREA_HISTORY_TABLE}
             ORDER BY accepted_at DESC, answer_id DESC
             LIMIT %s
@@ -405,19 +414,64 @@ def fetch_accepted_answer_context(
     return [
         {
             "question_label": row[0],
-            "answer_text": row[1],
-            "answer_style": row[2],
+            "answer_label": row[1],
+            "style": row[2],
         }
         for row in rows
     ]
 
 
 def format_accepted_answer_context(entries: list[dict[str, Any]]) -> str:
-    """Render accepted answers as compact JSON prompt context."""
+    """Render accepted answers without leaking response-schema lookalike keys."""
     if not entries:
         return "[]"
 
-    return json.dumps(entries, ensure_ascii=False, indent=2)
+    examples = [
+        {
+            "question_label": entry.get("question_label", ""),
+            "accepted_answer": entry.get("answer_label", ""),
+            "style": entry.get("style", ""),
+        }
+        for entry in entries
+    ]
+    return json.dumps(examples, ensure_ascii=False, indent=2)
+
+
+def extract_answer_label(answer: dict[str, Any]) -> Any:
+    """Return the answer text from the canonical key or known model mistakes."""
+    for key in ANSWER_LABEL_ALIASES:
+        if key in answer:
+            return answer.get(key)
+    return ""
+
+
+def canonicalize_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one model answer to the exact response schema expected downstream."""
+    canonical_answer = dict(answer)
+    answer_label = extract_answer_label(canonical_answer)
+    canonical_answer[ANSWER_LABEL_KEY] = (
+        answer_label if isinstance(answer_label, str) else str(answer_label or "")
+    )
+
+    for key in ANSWER_LABEL_ALIASES:
+        if key != ANSWER_LABEL_KEY:
+            canonical_answer.pop(key, None)
+
+    return canonical_answer
+
+
+def canonicalize_response_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize all answer rows to use only the canonical `answer label` key."""
+    answers = payload.get("answers")
+    if not isinstance(answers, list):
+        raise ValueError("Gemini response must include an answers array")
+
+    normalized_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    normalized_payload["answers"] = [
+        canonicalize_answer(answer) if isinstance(answer, dict) else answer
+        for answer in answers
+    ]
+    return normalized_payload
 
 
 def find_editor_command() -> Optional[str]:
@@ -445,15 +499,28 @@ def extract_editable_answers(response_payload: dict[str, Any]) -> list[dict[str,
 def build_review_editor_payload(
     job: ApplicationPrepJob,
     response_payload: dict[str, Any],
+    include_cover_letter: bool,
 ) -> dict[str, Any]:
     """Build the reduced review document opened in nvim."""
-    return {
+    review_payload = {
         "instructions": [
             "Edit only the editable_answers array.",
             "Leave question_label values unchanged.",
         ],
         "editable_answers": extract_editable_answers(response_payload),
     }
+    if include_cover_letter:
+        cover_letter = cover.normalize_cover_letter_payload(response_payload)
+        cover_letter["company_name"] = cover_letter["company_name"] or job.company_name or ""
+        cover_letter["job_title"] = cover_letter["job_title"] or job.title or ""
+        review_payload["instructions"] = [
+            "Edit only cover_letter and the editable_answers array.",
+            "The cover_letter company_name and job_title are used in the compiled PDF.",
+            "Leave question_label values unchanged.",
+        ]
+        review_payload["cover_letter"] = cover_letter
+
+    return review_payload
 
 
 def open_response_in_editor(review_payload: dict[str, Any]) -> dict[str, Any]:
@@ -483,7 +550,11 @@ def open_response_in_editor(review_payload: dict[str, Any]) -> dict[str, Any]:
         temp_path.unlink(missing_ok=True)
 
 
-def prompt_for_editable_review(job: ApplicationPrepJob, answer_count: int) -> bool:
+def prompt_for_editable_review(
+    job: ApplicationPrepJob,
+    answer_count: int,
+    has_cover_letter: bool,
+) -> bool:
     """Ask whether the user wants to edit the staged editable answers."""
     print()
     print(f"Job title: {job.title or 'N/A'}")
@@ -493,12 +564,16 @@ def prompt_for_editable_review(job: ApplicationPrepJob, answer_count: int) -> bo
         print(f"Questions that need approval: {answer_count}")
     else:
         print("No questions need approval")
+    print(
+        "Cover letter first paragraph needs approval: "
+        f"{'yes' if has_cover_letter else 'no'}"
+    )
 
     while True:
         choice = input("Edit the Model response? y or n : ").strip().lower()
         if choice == "y":
-            if answer_count == 0:
-                print("No editable model answers are available for this response.")
+            if answer_count == 0 and not has_cover_letter:
+                print("No editable model content is available for this response.")
                 return False
             return True
         if choice == "n":
@@ -521,22 +596,22 @@ def collect_accepted_editable_answers(
             continue
 
         question_label = str(answer.get("question label") or "").strip()
-        answer_style = str(answer.get("style") or "").strip()
-        answer_text_raw = answer.get("answer label")
-        if isinstance(answer_text_raw, str):
-            answer_text = answer_text_raw
-        elif answer_text_raw is None:
-            answer_text = ""
+        style = str(answer.get("style") or "").strip()
+        answer_label_raw = extract_answer_label(answer)
+        if isinstance(answer_label_raw, str):
+            answer_label = answer_label_raw
+        elif answer_label_raw is None:
+            answer_label = ""
         else:
-            answer_text = str(answer_text_raw)
+            answer_label = str(answer_label_raw)
 
-        if answer_text.strip():
+        if answer_label.strip():
             accepted_answers.append(
                 AcceptedEditableAnswer(
                     job_id=job_id,
                     question_label=question_label,
-                    answer_style=answer_style,
-                    answer_text=answer_text,
+                    style=style,
+                    answer_label=answer_label,
                 )
             )
 
@@ -546,6 +621,7 @@ def collect_accepted_editable_answers(
 def merge_reviewed_answers(
     original_payload: dict[str, Any],
     reviewed_payload: dict[str, Any],
+    include_cover_letter: bool,
 ) -> dict[str, Any]:
     """Merge edited answer labels from the review document back into the Gemini payload."""
     editable_answers = reviewed_payload.get("editable_answers")
@@ -559,6 +635,8 @@ def merge_reviewed_answers(
         )
 
     merged_payload = json.loads(json.dumps(original_payload, ensure_ascii=False))
+    if include_cover_letter:
+        merged_payload = cover.apply_cover_letter_review(merged_payload, reviewed_payload)
     merged_answers = merged_payload.get("answers")
     if not isinstance(merged_answers, list):
         raise ValueError("Original response must include an answers array")
@@ -576,13 +654,13 @@ def merge_reviewed_answers(
         if reviewed_label != original_label:
             raise ValueError("question_label values must not change during review")
 
-        answer_text = reviewed_answer.get("answer label")
-        if isinstance(answer_text, str):
-            answer["answer label"] = answer_text
-        elif answer_text is None:
+        answer_label = extract_answer_label(reviewed_answer)
+        if isinstance(answer_label, str):
+            answer["answer label"] = answer_label
+        elif answer_label is None:
             answer["answer label"] = ""
         else:
-            answer["answer label"] = str(answer_text)
+            answer["answer label"] = str(answer_label)
 
         editable_index += 1
 
@@ -592,24 +670,47 @@ def merge_reviewed_answers(
 def review_response_payload(
     job: ApplicationPrepJob,
     response_payload: dict[str, Any],
+    include_cover_letter: bool,
 ) -> tuple[dict[str, Any], int]:
     """Optionally open one editor for the editable answers in a staged response."""
+    if include_cover_letter:
+        cover_letter = response_payload.get("cover_letter")
+        if isinstance(cover_letter, dict):
+            company_name = cover_letter.get("company_name")
+            job_title = cover_letter.get("job_title")
+            if not isinstance(company_name, str) or not company_name.strip():
+                cover_letter["company_name"] = job.company_name or ""
+            if not isinstance(job_title, str) or not job_title.strip():
+                cover_letter["job_title"] = job.title or ""
+
     editable_answers = extract_editable_answers(response_payload)
-    if not editable_answers:
+    has_cover_letter = include_cover_letter and bool(
+        cover.normalize_cover_letter_payload(response_payload)
+    )
+    if not editable_answers and not has_cover_letter:
         return response_payload, 0
 
-    if not prompt_for_editable_review(job, len(editable_answers)):
+    if not prompt_for_editable_review(job, len(editable_answers), has_cover_letter):
         return response_payload, 0
 
-    review_payload = build_review_editor_payload(job, response_payload)
+    review_payload = build_review_editor_payload(
+        job,
+        response_payload,
+        include_cover_letter,
+    )
 
     while True:
         try:
             edited_review_payload = open_response_in_editor(review_payload)
-            merged_payload = merge_reviewed_answers(response_payload, edited_review_payload)
+            merged_payload = merge_reviewed_answers(
+                response_payload,
+                edited_review_payload,
+                include_cover_letter,
+            )
             parse_ai_response(
                 json.dumps(merged_payload, ensure_ascii=False),
                 job.job_id,
+                include_cover_letter,
             )
             return merged_payload, len(editable_answers)
         except json.JSONDecodeError as exc:
@@ -651,7 +752,8 @@ def fetch_jobs_to_prepare(
             ge.min_salary,
             ge.max_salary,
             gs.overall,
-            ge.application_questions
+            ge.application_questions,
+            ga.cover_letter
         FROM green_apply AS ga
         JOIN green_job AS gj
           ON gj.job_id = ga.job_id
@@ -686,6 +788,7 @@ def fetch_jobs_to_prepare(
             max_salary=row[7],
             overall=row[8],
             application_questions=parse_application_questions(row[9]),
+            existing_cover_letter=row[10],
         )
         for row in rows
     ]
@@ -707,23 +810,27 @@ def build_job_payload(job: ApplicationPrepJob) -> dict[str, Any]:
     }
 
 
-def load_prompt_template() -> str:
-    """Load the application-prep prompt template."""
-    return PROMPT_PATH.read_text(encoding="utf-8")
+def load_prompt_template(prompt_file_name: str) -> str:
+    """Load one application-prep prompt template."""
+    return (APPLY_DIR / prompt_file_name).read_text(encoding="utf-8")
 
 
 def render_prompt(
     prompt_template: str,
     job_payload: dict[str, Any],
     accepted_answer_context: list[dict[str, Any]],
+    include_cover_letter: bool,
 ) -> str:
     """Render the final prompt by injecting job JSON and accepted-answer context."""
     rendered_job = json.dumps(job_payload, ensure_ascii=False, indent=2)
     rendered_answer_context = format_accepted_answer_context(accepted_answer_context)
-    return (
+    rendered = (
         prompt_template.replace("{ACCEPTED ANSWERS HERE}", rendered_answer_context)
         .replace("{JOB JSON HERE}", rendered_job)
     )
+    if include_cover_letter:
+        rendered = rendered.replace("{COVER LETTER TEMPLATE HERE}", cover.load_cover_template())
+    return rendered
 
 
 def build_client() -> Any:
@@ -833,6 +940,9 @@ def process_prompt_result(
 ) -> None:
     """Review and persist one completed model response."""
     job = api_result.request.job
+    generate_cover_letter = api_result.request.generate_cover_letter
+    has_cover_letter_question = api_result.request.has_cover_letter_question
+    prompt_file_name = api_result.request.prompt_file_name
     response_text = api_result.response_text
 
     summary.prompt_tokens += api_result.prompt_tokens
@@ -855,23 +965,17 @@ def process_prompt_result(
         return
 
     try:
-        response_payload = parse_ai_response(response_text, job.job_id)
+        response_payload = parse_ai_response(response_text, job.job_id, generate_cover_letter)
     except Exception as exc:
         print(f"job_id={job.job_id} parse failed: {exc}")
         summary.parse_failures += 1
-        try:
-            persist_response(conn, job.job_id, response_text, [])
-        except psycopg.Error as db_exc:
-            print(f"job_id={job.job_id} database failed: {db_exc}")
-            summary.database_failures += 1
-            return
-        print(f"job_id={job.job_id} stored raw response after parse failure")
         return
 
     try:
         final_response_payload, _reviewed_count = review_response_payload(
             job,
             response_payload,
+            generate_cover_letter,
         )
     except RuntimeError as exc:
         print(str(exc))
@@ -887,6 +991,22 @@ def process_prompt_result(
         job.job_id,
         final_response_payload,
     )
+    cover_letter: Optional[dict[str, str]] = None
+    resume_path = str(DEFAULT_RESUME_PDF_PATH.resolve())
+    cover_letter_pdf_path: Optional[str] = None
+    if generate_cover_letter:
+        try:
+            cover_letter = cover.normalize_cover_letter_payload(final_response_payload)
+            cover_letter_pdf = cover.compile_cover_letter(
+                company_name=cover_letter["company_name"] or job.company_name or "",
+                job_title=cover_letter["job_title"] or job.title or "",
+                first_paragraph=cover_letter["first_paragraph"],
+            )
+            cover_letter_pdf_path = cover.normalize_pdf_path(cover_letter_pdf)
+        except Exception as exc:
+            print(f"job_id={job.job_id} cover letter failed: {exc}")
+            summary.cover_failures += 1
+            return
 
     try:
         persist_response(
@@ -894,6 +1014,13 @@ def process_prompt_result(
             job.job_id,
             final_response_text,
             accepted_editable_answers,
+            prompt_file_name=prompt_file_name,
+            cover_first_paragraph=(
+                cover_letter["first_paragraph"] if cover_letter is not None else None
+            ),
+            resume_path=resume_path,
+            cover_letter_pdf_path=cover_letter_pdf_path,
+            clear_cover_letter=not has_cover_letter_question,
         )
     except psycopg.Error as exc:
         print(f"job_id={job.job_id} database failed: {exc}")
@@ -947,23 +1074,16 @@ async def dispatch_and_process_prompt_requests(
         await asyncio.to_thread(process_prompt_result, conn, result, summary)
 
 
-def build_empty_response(job_id: int) -> str:
-    """Create a deterministic empty-answer response when no non-trivial prompts remain."""
-    return json.dumps(
-        {
-            "job_id": job_id,
-            "answers": [],
-            "confidence": "low",
-        },
-        ensure_ascii=False,
-    )
-
-
-def parse_ai_response(response_text: str, expected_job_id: int) -> dict[str, Any]:
+def parse_ai_response(
+    response_text: str,
+    expected_job_id: int,
+    include_cover_letter: bool,
+) -> dict[str, Any]:
     """Validate that the model returned JSON for the expected job."""
     payload = json.loads(response_text)
     if not isinstance(payload, dict):
         raise ValueError("Gemini JSON response must be an object")
+    payload = canonicalize_response_payload(payload)
     raw_job_id = payload.get("job_id")
     if isinstance(raw_job_id, str) and raw_job_id.strip().isdigit():
         raw_job_id = int(raw_job_id.strip())
@@ -972,6 +1092,10 @@ def parse_ai_response(response_text: str, expected_job_id: int) -> dict[str, Any
     answers = payload.get("answers")
     if not isinstance(answers, list):
         raise ValueError("Gemini response must include an answers array")
+    if include_cover_letter:
+        cover.normalize_cover_letter_payload(payload)
+    else:
+        payload.pop("cover_letter", None)
     return payload
 
 
@@ -980,20 +1104,36 @@ def persist_response(
     job_id: int,
     response_text: str,
     accepted_editable_answers: list[AcceptedEditableAnswer],
+    prompt_file_name: str,
+    cover_first_paragraph: Optional[str] = None,
+    resume_path: Optional[str] = None,
+    cover_letter_pdf_path: Optional[str] = None,
+    clear_cover_letter: bool = False,
 ) -> None:
-    """Store the approved response, answer history, and packaged marker."""
+    """Store the approved response, cover history, answer history, and packaged marker."""
+    cover_letter_value = None if clear_cover_letter else cover_letter_pdf_path
+    cover_letter_sql = "%s" if clear_cover_letter or cover_letter_pdf_path is not None else "cover_letter"
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 UPDATE green_apply
                 SET response = %s,
                     prompt = %s,
                     model = %s,
+                    resume = COALESCE(%s, resume),
+                    cover_letter = {cover_letter_sql},
                     packaged_at = NOW()
                 WHERE job_id = %s
                 """,
-                (response_text, PROMPT_FILE_NAME, MODEL_NAME, job_id),
+                (
+                    response_text,
+                    prompt_file_name,
+                    MODEL_NAME,
+                    resume_path,
+                    cover_letter_value,
+                    job_id,
+                ),
             )
 
             for accepted_answer in accepted_editable_answers:
@@ -1002,8 +1142,8 @@ def persist_response(
                     INSERT INTO {TEXTAREA_HISTORY_TABLE} (
                         job_id,
                         question_label,
-                        answer_style,
-                        answer_text,
+                        answer_label,
+                        style,
                         prompt,
                         model
                     )
@@ -1012,9 +1152,28 @@ def persist_response(
                     (
                         accepted_answer.job_id,
                         accepted_answer.question_label,
-                        accepted_answer.answer_style,
-                        accepted_answer.answer_text,
-                        PROMPT_FILE_NAME,
+                        accepted_answer.answer_label,
+                        accepted_answer.style,
+                        prompt_file_name,
+                        MODEL_NAME,
+                    ),
+                )
+
+            if cover_first_paragraph is not None:
+                cur.execute(
+                    f"""
+                    INSERT INTO {COVER_HISTORY_TABLE} (
+                        job_id,
+                        first_paragraph,
+                        prompt,
+                        model
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        job_id,
+                        cover_first_paragraph,
+                        prompt_file_name,
                         MODEL_NAME,
                     ),
                 )
@@ -1041,12 +1200,14 @@ def prepare_applications(
     max_concurrency: int,
 ) -> PrepSummary:
     """Prepare queued applications with AI-generated answers."""
-    prompt_template = load_prompt_template()
+    prompt_templates = {
+        PROMPT_WITH_COVER_FILE_NAME: load_prompt_template(PROMPT_WITH_COVER_FILE_NAME),
+        PROMPT_WITHOUT_COVER_FILE_NAME: load_prompt_template(PROMPT_WITHOUT_COVER_FILE_NAME),
+    }
     client = build_client()
     summary = PrepSummary()
 
     with db_connect() as conn:
-        ensure_textarea_answer_history_table(conn)
         summary.available = count_jobs_to_prepare(conn, mode)
         jobs = fetch_jobs_to_prepare(conn, mode, limit)
         summary.selected = len(jobs)
@@ -1063,27 +1224,29 @@ def prepare_applications(
         accepted_answer_context = fetch_accepted_answer_context(conn)
         pending_requests: list[PendingPromptRequest] = []
         for job in jobs:
+            has_cover_letter = has_cover_letter_question(job.application_questions)
+            generate_cover_letter = has_cover_letter and not bool(
+                isinstance(job.existing_cover_letter, str) and job.existing_cover_letter.strip()
+            )
+            prompt_file_name = (
+                PROMPT_WITH_COVER_FILE_NAME
+                if generate_cover_letter
+                else PROMPT_WITHOUT_COVER_FILE_NAME
+            )
             job_payload = build_job_payload(job)
-            filtered_questions = job_payload["application_questions"]
-
-            if not filtered_questions:
-                empty_response = build_empty_response(job.job_id)
-                try:
-                    persist_response(conn, job.job_id, empty_response, [])
-                except psycopg.Error as exc:
-                    print(f"job_id={job.job_id} database failed: {exc}")
-                    summary.database_failures += 1
-                    continue
-
-                summary.packaged += 1
-                print(f"job_id={job.job_id} packaged (no non-trivial questions)")
-                continue
-
-            prompt = render_prompt(prompt_template, job_payload, accepted_answer_context)
+            prompt = render_prompt(
+                prompt_templates[prompt_file_name],
+                job_payload,
+                accepted_answer_context,
+                generate_cover_letter,
+            )
             pending_requests.append(
                 PendingPromptRequest(
                     job=job,
                     prompt=prompt,
+                    prompt_file_name=prompt_file_name,
+                    generate_cover_letter=generate_cover_letter,
+                    has_cover_letter_question=has_cover_letter,
                 )
             )
 
@@ -1144,6 +1307,7 @@ def main() -> None:
         f"api_failures={summary.api_failures} parse_failures={summary.parse_failures} "
         f"review_failures={summary.review_failures} "
         f"database_failures={summary.database_failures} "
+        f"cover_failures={summary.cover_failures} "
         f"input_tokens={summary.prompt_tokens} "
         f"input_cost=${summary.prompt_cost:.6f} "
         f"output_tokens={summary.response_tokens} "

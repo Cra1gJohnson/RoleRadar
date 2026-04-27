@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Optional
 from playwright.sync_api import sync_playwright, TimeoutError, expect
 
+import cover
+
 
 # clean path to parent dir. joined with json file
 ANSWERS_PATH = Path(__file__).resolve().parent / "answers.json"
@@ -65,6 +67,17 @@ DEFAULT_COVER_LETTER_CANDIDATES = (
     Path("/home/craig/Downloads/Intuitive_Cover_Letter.pdf"),
 )
 
+ANSWER_LABEL_ALIASES = (
+    "answer label",
+    "answer_label",
+    "answerLabel",
+    "answer text",
+    "answer_text",
+    "answered text",
+    "answered_text",
+    "answeredText",
+)
+
 
 @dataclass(frozen=True)
 class AnswerTarget:
@@ -83,6 +96,8 @@ class JobsPackageItem:
     url: str
     standard_job: bool
     response: Any
+    resume: str | None = None
+    cover_letter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +211,16 @@ def try_question(form, check: json) -> None :
 
     except Exception as e:
         print(f"bonked on get_by_text -- {check["question"]} -- {e} ")
+
+
+def get_answer_label(answer: dict[str, Any]) -> str:
+    """Return the canonical answer label, tolerating older malformed responses."""
+    for key in ANSWER_LABEL_ALIASES:
+        value = answer.get(key)
+        if value is not None:
+            return value if isinstance(value, str) else str(value)
+    return ""
+
 
 def find_root(page):
     try:
@@ -340,26 +365,30 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
         response = json.loads(job.response)
         for resp in response["answers"] :
             try :
+
+                # this pattern match may not be needed
                 pattern = re.compile(
                     r".*(linkedin|website|github).*"
                 )
                 question = resp["question label"]
+                answer_label = get_answer_label(resp)
                 if pattern.match(question.lower()):
                     continue
+
                 if resp["style"] == "Select" : 
                     box = form.get_by_role("combobox", name=resp["question label"])
                     box.wait_for(state="visible")
                     box.click()
-                    box.press_sequentially(resp["answer label"], delay=30)
-                    if resp["answer label"] != "" :
-                        form.get_by_role("option", name=resp["answer label"], exact=True).click()
+                    box.press_sequentially(answer_label, delay=30)
+                    if answer_label != "" :
+                        form.get_by_role("option", name=answer_label, exact=True).click()
                 elif resp["style"] == "Input" or resp["style"] == "Input_Text":
                     box = form.get_by_label(resp["question label"]).first
                     box.wait_for(state="visible")
                     box.click()
-                    box.press_sequentially(resp["answer label"], delay=10, timeout=10000)
+                    box.press_sequentially(answer_label, delay=10, timeout=10000)
                     try :
-                        option = form.get_by_role("option", name=resp["answer label"])
+                        option = form.get_by_role("option", name=answer_label)
                         option.wait_for(state="visible")
                         option.click()
                     except Exception as e:
@@ -368,29 +397,60 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
                     box = form.get_by_role("textbox", name=resp["question label"])
                     box.wait_for(state="visible")
                     box.click()
-                    box.press_sequentially(resp["answer label"], delay=10, timeout=10000)
+                    box.press_sequentially(answer_label, delay=10, timeout=10000)
                 
             except Exception as exec:
                 print(f"yeah, ;-( it was {resp["question label"]} and {exec}")
+        try :
+            form.get_by_role("checkbox", name="I agree").check()
+        except:
+            pass
+        
+        
         # upload files
         try:
             try:
                 resume_input = form.get_by_role("group", name="Resume/CV").get_by_label("Attach")
-                # cover_input = form.get_by_role("group", name="Cover Letter").get_by_label("Attach")
                 secondary = False
             except Exception as e:
                 secondary = True
             if secondary :
                 try :
-
                     resume_section = form.locator("div", has_text="Resume").first
                     resume_input = resume_section.locator('input[type="file"]').first
                 except Exception as e:
                     print("failed secondary resume")
             
-            resume_input.set_input_files("/home/craig/Documents/AppMaterials/Craig_Johnson_Resume.pdf")
+            resume_path = job.resume or "/home/craig/Documents/AppMaterials/Craig_Johnson_Resume.pdf"
+            resume_input.set_input_files(resume_path)
         except Exception as exec:
             print(f"resume boinked \n because {exec}")
+
+        if job.cover_letter:
+            upload_cover_path: Optional[Path] = None
+            temporary_cover_path = False
+            try:
+                try:
+                    cover_input = form.get_by_role("group", name="Cover Letter").get_by_label("Attach")
+                    secondary = False
+                except Exception as e:
+                    secondary = True
+                if secondary:
+                    try:
+                        cover_section = form.locator("div", has_text="Cover Letter").first
+                        cover_input = cover_section.locator('input[type="file"]').first
+                    except Exception as e:
+                        print("failed secondary cover letter")
+
+                upload_cover_path, temporary_cover_path = cover.resolve_cover_letter_upload_path(
+                    job.cover_letter
+                )
+                cover_input.set_input_files(str(upload_cover_path))
+            except Exception as exec:
+                print(f"cover letter boinked \n because {exec}")
+            finally:
+                if upload_cover_path is not None and temporary_cover_path:
+                    cover.cleanup_materialized_cover_letter(upload_cover_path)
         
         try:
             try:
@@ -425,6 +485,8 @@ def validate_job_item(item: Any, row_index: int) -> JobsPackageItem:
     url = item.get("url")
     standard_job = item.get("standard_job")
     response = item.get("response")
+    resume = item.get("resume")
+    cover_letter = item.get("cover_letter")
 
     if not isinstance(job_id, int) or job_id <= 0:
         raise ValueError(f"Row {row_index} has an invalid job_id: {job_id!r}")
@@ -438,6 +500,12 @@ def validate_job_item(item: Any, row_index: int) -> JobsPackageItem:
         url=url.strip(),
         standard_job=standard_job,
         response=response,
+        resume=resume.strip() if isinstance(resume, str) and resume.strip() else None,
+        cover_letter=(
+            cover_letter.strip()
+            if isinstance(cover_letter, str) and cover_letter.strip()
+            else None
+        ),
     )
 
 

@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
+from apply import cover
 
 load_shared_env()
 
@@ -176,6 +177,20 @@ def insert_application_row(conn: psycopg.Connection, job_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             """
+            SELECT cover_letter
+            FROM green_apply
+            WHERE job_id = %s
+            """,
+            (job_id,),
+        )
+        cover_row = cur.fetchone()
+
+    stored_cover_letter = cover_row[0] if cover_row else None
+    application_cover_letter = cover.read_persisted_cover_letter_source(stored_cover_letter)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
             INSERT INTO application (
                 source,
                 source_job_id,
@@ -227,7 +242,7 @@ def insert_application_row(conn: psycopg.Connection, job_id: int) -> bool:
                 ga.model,
                 ga.response,
                 ga.resume,
-                ga.cover_letter,
+                %s,
                 ga.packaged_at,
                 ga.submitted_at,
                 ga.time_to_submit
@@ -242,7 +257,7 @@ def insert_application_row(conn: psycopg.Connection, job_id: int) -> bool:
               AND ga.submitted_at IS NOT NULL
             RETURNING app_id
             """,
-            (job_id,),
+            (application_cover_letter, job_id),
         )
         inserted_row = cur.fetchone()
 
@@ -252,7 +267,11 @@ def insert_application_row(conn: psycopg.Connection, job_id: int) -> bool:
             "did not produce a complete row"
         )
 
-    return inserted_row is not None
+    inserted = inserted_row is not None
+    if inserted:
+        cover.cleanup_persisted_cover_letter_artifacts(stored_cover_letter)
+
+    return inserted
 
 
 def backfill_application_rows(conn: psycopg.Connection) -> BackfillSummary:
