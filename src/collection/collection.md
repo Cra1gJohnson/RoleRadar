@@ -21,14 +21,15 @@
 1. Read candidate Greenhouse board tokens from PostgreSQL (`board_token`).
 2. Select boards to monitor based on polling cadence and prior collection results.
 3. Fetch `GET https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs`.
-4. Normalize the returned board payload in memory.
-5. Compute a board hash from the sorted list of `jobs[].id` values.
-6. Persist or update a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
-7. Compare all normalized response jobs to the current `green_job` rows for the same token.
-8. Upsert all valid response jobs into PostgreSQL (`green_job`) with a per-job `united_states` location flag.
-9. Delete `green_job` rows for that token that are no longer present in the normalized response.
-10. Record monitoring state so the next poll cycle can prioritize boards correctly.
-11. Write the final collection summary line to `src/collection/logs/`.
+4. Extract and sort the returned `jobs[].id` values, compute the board hash, and compare it with `greenhouse_board_snapshot.board_hash`.
+5. For unchanged boards, update the snapshot poll metadata and skip full normalization, job upsert, and stale-row deletion.
+6. For changed or first-seen boards, normalize the returned board payload in memory.
+7. Persist or update a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
+8. Compare all normalized response jobs to the current `green_job` rows for the same token.
+9. Upsert all valid response jobs into PostgreSQL (`green_job`) with a per-job `united_states` location flag.
+10. Delete `green_job` rows for that token that are no longer present in the normalized response.
+11. Record monitoring state so the next poll cycle can prioritize boards correctly.
+12. Write the final collection summary line to `src/collection/logs/`.
 
 ## Collection Targets
 
@@ -106,8 +107,8 @@
 
 - Prefer idempotent writes wherever possible.
 - Keep board fetching separate from job normalization and job table writes.
-- Treat board hashing as snapshot metadata, not as a gate for whether the board should be synchronized.
-- Normalize every successful board response before comparing it to the database state.
+- Treat board hashing as the fast unchanged-board gate before full normalization and job synchronization.
+- Normalize successful board responses only when the board hash is new or changed.
 - Keep all returned job IDs in the board hash and write all valid normalized jobs into `green_job`.
 - Set `green_job.united_states` for every written job based on its normalized location.
 - Keep request status and fetch time for every board poll attempt.
@@ -135,6 +136,7 @@
 - Uses a bounded queue so responses can be normalized and written sequentially.
 - Keeps one PostgreSQL connection open for the duration of the run.
 - Updates `greenhouse_board_snapshot` on every successful or failed fetch attempt.
+- Short-circuits successful unchanged responses by comparing the freshly computed board hash against the stored snapshot hash before full normalization and job synchronization.
 - Feeds normalized work items into the database writer stage so upsert and delete remain sequential.
 - Prints the final summary and writes the same single line to `logs/collection_summary_YYYYMMDD_HHMMSS_<mode>.log`.
 

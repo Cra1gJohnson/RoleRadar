@@ -20,7 +20,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from env_loader import load_shared_env
 from delete import delete_missing_jobs, fetch_existing_job_rows, verify_cascade_contract
-from normalization import normalize_board_payload
+from normalization import extract_job_count, extract_sorted_job_ids, normalize_board_payload
 from upsert import upsert_jobs
 
 load_shared_env()
@@ -39,7 +39,7 @@ GREENHOUSE_API_HEADERS = {
 BOARD_HASH_HEX_LENGTH = 24
 DEFAULT_RATE_PER_MINUTE = 200
 DEFAULT_CONCURRENCY = 16
-DEFAULT_FAILURE_THRESHOLD = 16
+DEFAULT_FAILURE_THRESHOLD = 0
 DEFAULT_QUEUE_SIZE = 32
 PROGRESS_PRINT_INTERVAL = 50
 SUMMARY_LOG_DIR = Path(__file__).resolve().parent / "logs"
@@ -479,8 +479,38 @@ async def process_successful_result(
     summary: RunSummary,
 ) -> None:
     """Normalize, compare, and persist one successful board response."""
+    payload = result.payload or {}
+    raw_job_ids = extract_sorted_job_ids(payload)
+    board_hash = compute_board_hash(raw_job_ids)
+    job_count = extract_job_count(payload)
+
+    db_start = time.perf_counter()
+    existing_snapshot: Optional[SnapshotRow] = None
+    async with conn.transaction():
+        existing_snapshot = await get_latest_snapshot(conn, result.token)
+        next_status = resolve_snapshot_status(
+            job_count=job_count,
+            existing_status=existing_snapshot.status if existing_snapshot else None,
+        )
+
+        if existing_snapshot is not None and existing_snapshot.board_hash == board_hash:
+            await update_snapshot(
+                conn,
+                snapshot_id=existing_snapshot.snapshot_id,
+                request_status=200,
+                job_count=job_count,
+                status=next_status,
+            )
+
+    if existing_snapshot is not None and existing_snapshot.board_hash == board_hash:
+        db_seconds = time.perf_counter() - db_start
+        summary.db_seconds_total += db_seconds
+        summary.db_latencies_ms.append(db_seconds * 1000.0)
+        summary.no_change += 1
+        return
+
     normalize_start = time.perf_counter()
-    normalized = normalize_board_payload(result.payload or {}, result.token)
+    normalized = normalize_board_payload(payload, result.token)
     normalize_seconds = time.perf_counter() - normalize_start
     summary.normalize_seconds_total += normalize_seconds
     summary.normalize_latencies_ms.append(normalize_seconds * 1000.0)
@@ -488,7 +518,6 @@ async def process_successful_result(
     summary.filtered_count += normalized.filtered_count
     summary.normalized_jobs += len(normalized.jobs)
 
-    board_hash = compute_board_hash(normalized.raw_job_ids)
     response_job_ids = [job.greenhouse_job_id for job in normalized.jobs]
 
     db_start = time.perf_counter()

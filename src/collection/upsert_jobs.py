@@ -74,6 +74,7 @@ class JobRow:
     company_name: Optional[str]
     title: Optional[str]
     location: Optional[str]
+    united_states: bool
     url: Optional[str]
     updated_at: datetime
 
@@ -84,6 +85,7 @@ class ExistingJobRow:
 
     job_id: int
     updated_at: Optional[datetime]
+    united_states: Optional[bool]
 
 
 @dataclass
@@ -256,13 +258,16 @@ def normalize_job(
 
     updated_at = parse_payload_timestamp(job.get("updated_at"), token, greenhouse_job_id)
 
+    location_name = extract_location_name(job)
+
     return JobRow(
         snapshot_id=snapshot_id,
         token=token,
         greenhouse_job_id=greenhouse_job_id,
         company_name=normalize_text(job.get("company_name")),
         title=normalize_text(job.get("title")),
-        location=extract_location_name(job),
+        location=location_name,
+        united_states=is_united_states_location(location_name),
         url=normalize_text(job.get("absolute_url")),
         updated_at=updated_at,
     )
@@ -281,7 +286,6 @@ def normalize_jobs(
     """
     jobs = validate_payload(payload)
     normalized_jobs: list[JobRow] = []
-    filtered_count = 0
     failed_count = 0
 
     for job in jobs:
@@ -290,18 +294,13 @@ def normalize_jobs(
             failed_count += 1
             continue
 
-        location_name = extract_location_name(job)
-        if not is_united_states_location(location_name):
-            filtered_count += 1
-            continue
-
         try:
             normalized_jobs.append(normalize_job(job, token, snapshot_id))
         except ValueError as exc:
             print(str(exc))
             failed_count += 1
 
-    return normalized_jobs, filtered_count, failed_count
+    return normalized_jobs, 0, failed_count
 
 
 def fetch_existing_jobs(
@@ -316,7 +315,7 @@ def fetch_existing_jobs(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT job_id, greenhouse_job_id, updated_at
+            SELECT job_id, greenhouse_job_id, updated_at, united_states
             FROM green_job
             WHERE token = %s
               AND greenhouse_job_id = ANY(%s)
@@ -326,7 +325,7 @@ def fetch_existing_jobs(
         rows = cur.fetchall()
 
     return {
-        row[1]: ExistingJobRow(job_id=row[0], updated_at=row[2])
+        row[1]: ExistingJobRow(job_id=row[0], updated_at=row[2], united_states=row[3])
         for row in rows
     }
 
@@ -343,13 +342,14 @@ def insert_job(conn: psycopg.Connection, job: JobRow) -> None:
                 company_name,
                 title,
                 location,
+                united_states,
                 url,
                 first_fetched_at,
                 updated_at,
                 candidate,
                 enriched
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
             """,
             (
                 job.snapshot_id,
@@ -358,6 +358,7 @@ def insert_job(conn: psycopg.Connection, job: JobRow) -> None:
                 job.company_name,
                 job.title,
                 job.location,
+                job.united_states,
                 job.url,
                 job.updated_at,
                 None,
@@ -378,6 +379,7 @@ def update_job(conn: psycopg.Connection, existing_job_id: int, job: JobRow) -> N
                 company_name = %s,
                 title = %s,
                 location = %s,
+                united_states = %s,
                 url = %s,
                 updated_at = %s
             WHERE job_id = %s
@@ -389,6 +391,7 @@ def update_job(conn: psycopg.Connection, existing_job_id: int, job: JobRow) -> N
                 job.company_name,
                 job.title,
                 job.location,
+                job.united_states,
                 job.url,
                 job.updated_at,
                 existing_job_id,
@@ -425,7 +428,7 @@ def process_board_payload(
 
     summary.filtered_count += filtered_count
     summary.failed_count += failed_count
-    summary.united_states = bool(normalized_jobs)
+    summary.united_states = any(job.united_states for job in normalized_jobs)
 
     if not normalized_jobs:
         log_info(
@@ -449,7 +452,11 @@ def process_board_payload(
         for job in normalized_jobs:
             existing_job = existing_jobs.get(job.greenhouse_job_id) if check_comp else None
 
-            if existing_job is not None and existing_job.updated_at == job.updated_at:
+            if (
+                existing_job is not None
+                and existing_job.updated_at == job.updated_at
+                and existing_job.united_states == job.united_states
+            ):
                 summary.skipped_count += 1
                 continue
 
