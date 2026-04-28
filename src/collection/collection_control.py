@@ -6,6 +6,7 @@ import resource
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -38,9 +39,10 @@ GREENHOUSE_API_HEADERS = {
 BOARD_HASH_HEX_LENGTH = 24
 DEFAULT_RATE_PER_MINUTE = 200
 DEFAULT_CONCURRENCY = 16
-DEFAULT_FAILURE_THRESHOLD = 0
+DEFAULT_FAILURE_THRESHOLD = 16
 DEFAULT_QUEUE_SIZE = 32
 PROGRESS_PRINT_INTERVAL = 50
+SUMMARY_LOG_DIR = Path(__file__).resolve().parent / "logs"
 
 _STOP_TOKEN = object()
 
@@ -487,7 +489,7 @@ async def process_successful_result(
     summary.normalized_jobs += len(normalized.jobs)
 
     board_hash = compute_board_hash(normalized.raw_job_ids)
-    response_job_ids = [job.greenhouse_job_id for job in normalized.db_jobs]
+    response_job_ids = [job.greenhouse_job_id for job in normalized.jobs]
 
     db_start = time.perf_counter()
     async with conn.transaction():
@@ -734,8 +736,8 @@ def capture_process_metrics(
     summary.max_rss_kb = usage.ru_maxrss
 
 
-def print_final_summary(summary: RunSummary) -> None:
-    """Print a compact final run summary with benchmark metrics."""
+def format_final_summary(summary: RunSummary) -> str:
+    """Build a compact final run summary with benchmark metrics."""
     request_p50 = _percentile(summary.request_latencies_ms, 0.50)
     request_p95 = _percentile(summary.request_latencies_ms, 0.95)
     normalize_p50 = _percentile(summary.normalize_latencies_ms, 0.50)
@@ -743,7 +745,7 @@ def print_final_summary(summary: RunSummary) -> None:
     db_p50 = _percentile(summary.db_latencies_ms, 0.50)
     db_p95 = _percentile(summary.db_latencies_ms, 0.95)
 
-    print(
+    return (
         f"Final summary: scheduled={summary.scheduled} completed={summary.completed} "
         f"changed={summary.changed} no_change={summary.no_change} failed={summary.failed} "
         f"request_failures={summary.request_failures} normalization_failures={summary.normalization_failures} "
@@ -762,6 +764,23 @@ def print_final_summary(summary: RunSummary) -> None:
         f"normalize_ms_p50={normalize_p50:.1f} normalize_ms_p95={normalize_p95:.1f} "
         f"db_ms_p50={db_p50:.1f} db_ms_p95={db_p95:.1f}"
     )
+
+
+def write_final_summary_log(summary_text: str, mode: str) -> Path:
+    """Write the final summary line to a timestamped collection log file."""
+    SUMMARY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = SUMMARY_LOG_DIR / f"collection_summary_{timestamp}_{mode}.log"
+    log_path.write_text(f"{summary_text}\n", encoding="utf-8")
+    return log_path
+
+
+def print_final_summary(summary: RunSummary, mode: str) -> None:
+    """Print and log the compact final run summary."""
+    summary_text = format_final_summary(summary)
+    print(summary_text)
+    log_path = write_final_summary_log(summary_text, mode)
+    print(f"summary log={log_path}")
 
 
 async def run_test_mode() -> int:
@@ -783,7 +802,7 @@ async def run_test_mode() -> int:
         total_tokens=1,
     )
     capture_process_metrics(summary, start_time, start_usage)
-    print_final_summary(summary)
+    print_final_summary(summary, "test")
     return 1 if summary.failed or summary.aborted_count else 0
 
 
@@ -816,7 +835,7 @@ async def run_full_scan(
     )
     capture_process_metrics(summary, start_time, start_usage)
     print_progress(summary, len(tokens))
-    print_final_summary(summary)
+    print_final_summary(summary, "full")
     return 1 if summary.failed or summary.aborted_count else 0
 
 
@@ -849,7 +868,7 @@ async def run_unseen_scan(
     )
     capture_process_metrics(summary, start_time, start_usage)
     print_progress(summary, len(tokens))
-    print_final_summary(summary)
+    print_final_summary(summary, "new")
     return 1 if summary.failed or summary.aborted_count else 0
 
 

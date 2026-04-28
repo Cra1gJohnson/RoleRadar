@@ -262,6 +262,7 @@ def extract_result_urls(payload: dict) -> list[str]:
 
 
 async def validate_board_token(http: httpx.AsyncClient, token: str) -> bool:
+    # get request
     response = await http.get(GREENHOUSE_VALIDATE_API.format(token=quote(token, safe="")))
     response.raise_for_status()
     payload = response.json()
@@ -305,6 +306,7 @@ def run_search(
     query: str,
 ) -> dict:
     rate_limiter.wait_for_slot()
+    # get request to YOU
     response = http.get(
         YOU_SEARCH_API,
         params={

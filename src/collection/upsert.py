@@ -18,6 +18,7 @@ class ExistingJobRow:
     job_id: int
     greenhouse_job_id: int
     updated_at: Optional[datetime]
+    united_states: Optional[bool]
 
 
 @dataclass
@@ -59,7 +60,7 @@ async def fetch_existing_jobs(
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT job_id, greenhouse_job_id, updated_at
+            SELECT job_id, greenhouse_job_id, updated_at, united_states
             FROM green_job
             WHERE token = %s
               AND greenhouse_job_id = ANY(%s)
@@ -73,6 +74,7 @@ async def fetch_existing_jobs(
             job_id=row[0],
             greenhouse_job_id=row[1],
             updated_at=row[2],
+            united_states=row[3],
         )
         for row in rows
     }
@@ -95,13 +97,14 @@ async def insert_job(
                 company_name,
                 title,
                 location,
+                united_states,
                 url,
                 first_fetched_at,
                 updated_at,
                 candidate,
                 enriched
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
             """,
             (
                 snapshot_id,
@@ -110,6 +113,7 @@ async def insert_job(
                 job.company_name,
                 job.title,
                 job.location,
+                job.united_states,
                 job.url,
                 job.updated_at,
                 None,
@@ -136,6 +140,7 @@ async def update_job(
                 company_name = %s,
                 title = %s,
                 location = %s,
+                united_states = %s,
                 url = %s,
                 updated_at = %s
             WHERE job_id = %s
@@ -147,6 +152,7 @@ async def update_job(
                 job.company_name,
                 job.title,
                 job.location,
+                job.united_states,
                 job.url,
                 job.updated_at,
                 existing_job_id,
@@ -181,7 +187,11 @@ async def upsert_jobs(
 
     for job in jobs:
         existing_job = existing_rows.get(job.greenhouse_job_id)
-        if existing_job is not None and existing_job.updated_at == job.updated_at:
+        if (
+            existing_job is not None
+            and existing_job.updated_at == job.updated_at
+            and existing_job.united_states == job.united_states
+        ):
             summary.skipped_count += 1
             continue
 

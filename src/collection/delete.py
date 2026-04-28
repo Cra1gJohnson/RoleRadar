@@ -84,7 +84,7 @@ async def fetch_existing_job_rows(
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT job_id, greenhouse_job_id, updated_at
+            SELECT job_id, greenhouse_job_id, updated_at, united_states
             FROM green_job
             WHERE token = %s
             """,
@@ -97,6 +97,7 @@ async def fetch_existing_job_rows(
             job_id=row[0],
             greenhouse_job_id=row[1],
             updated_at=row[2],
+            united_states=row[3],
         )
         for row in rows
     }

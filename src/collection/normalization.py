@@ -57,6 +57,7 @@ class NormalizedJobRow:
     company_name: Optional[str]
     title: Optional[str]
     location: Optional[str]
+    united_states: bool
     url: Optional[str]
     updated_at: datetime
 
@@ -66,7 +67,7 @@ class NormalizedBoardPayload:
     """Pure in-memory representation of a normalized Greenhouse board payload.
 
     `jobs` contains every normalized job in the response.
-    `db_jobs` contains the U.S.-eligible subset allowed to reach green_job.
+    `db_jobs` contains every normalized job allowed to reach green_job.
     """
 
     token: str
@@ -214,6 +215,7 @@ def normalize_job(
         company_name=normalize_text(job.get("company_name")),
         title=normalize_text(job.get("title")),
         location=location_name,
+        united_states=is_united_states_location(location_name),
         url=normalize_text(job.get("absolute_url")),
         updated_at=updated_at,
     )
@@ -230,7 +232,6 @@ def normalize_board_payload(payload: dict[str, Any], token: str) -> NormalizedBo
     db_jobs: list[NormalizedJobRow] = []
     failed_count = 0
     united_states = False
-    filtered_count = 0
 
     for job in jobs:
         if not isinstance(job, dict):
@@ -243,12 +244,10 @@ def normalize_board_payload(payload: dict[str, Any], token: str) -> NormalizedBo
             failed_count += 1
             continue
 
-        if is_united_states_location(normalized_job.location):
+        if normalized_job.united_states:
             united_states = True
-            db_jobs.append(normalized_job)
-        else:
-            filtered_count += 1
 
+        db_jobs.append(normalized_job)
         normalized_jobs.append(normalized_job)
 
     return NormalizedBoardPayload(
@@ -258,7 +257,7 @@ def normalize_board_payload(payload: dict[str, Any], token: str) -> NormalizedBo
         db_jobs=db_jobs,
         job_count=extract_job_count(payload),
         company_name=extract_company_name(payload, raw_job_ids),
-        filtered_count=filtered_count,
+        filtered_count=0,
         failed_count=failed_count,
         united_states=united_states,
     )
