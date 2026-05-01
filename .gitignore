@@ -9,8 +9,6 @@ __pycache__
 #
 .vscode
 #
-ddgr-2.2
-#
 .pytest_cache
 #
 src/enrichment/greenhouse_job_response
@@ -19,7 +17,7 @@ src/scoring/enrichment_display
 #
 src/apply/green_questions
 #
-tests
+tests/
 #
 *.txt
 #
