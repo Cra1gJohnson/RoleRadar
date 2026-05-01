@@ -19,6 +19,8 @@ src/scoring/enrichment_display
 #
 src/apply/green_questions
 #
+tests
+#
 *.txt
 #
 !discovery_names.txt
@@ -32,6 +34,4 @@ templates
 logs
 #
 *.log
-#
-tests
 #
