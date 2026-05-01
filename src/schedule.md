@@ -110,6 +110,14 @@ Tasks:
 
 - found bug in app preparation
 
+
+## May 1st
+
+- Collection changes to location flag on green_job table insert
+- Create_ scripts for table creation, moving to ats agnostic schema
+- Dockerfile creation and begining testing
+- repo clean
+
 ## Next things
 
 - candidate_filter needs to do the regex inside of psql because It takes far too long outside.
