@@ -12,7 +12,7 @@
 - `prepare_app.py`: AI-powered application-question prep for queued jobs.
 - `cover.py`: cover-letter and resume material helper used by `prepare_app.py`.
 - `open_jobs.py`: Playwright browser opener and URL router for queued application URLs.
-- `handle_jobs.py`: Playwright browser runner that consumes the `open_jobs.py` package JSON, uploads stored material paths, and fills standard Greenhouse forms.
+- `handle_jobs.py`: Playwright browser runner that consumes the `open_jobs.py` package JSON, uploads stored material paths, reads default local upload paths from repo `.env`, and fills standard Greenhouse forms.
 - `utility/dump_apply_html.py`: fetches a queued apply URL and writes the raw HTML response to `green_questions/`.
 - `utility/reset_green_apply.py`: clears queued apply rows back to a blank replay state for one or more job ids.
 - `utility/reset_green_score_viewed.py`: clears the `green_score.viewed` flag for one or more un-applied jobs so they can be reviewed again.
@@ -191,7 +191,7 @@
 - Use `application` for persistent application history, metrics, and eventual source-of-truth reporting across all application sources.
 - Use `green_score.applied` as the immediate queue completion flag.
 - Use `src/execute.sh` to launch Chrome with `Profile 2`, then attach Playwright to `http://127.0.0.1:9222`.
-- `handle_jobs.py` reads the jobs package from `stdin`, connects over CDP, uploads `green_apply.resume`, uploads the stored `green_apply.cover_letter` PDF when present, and still tolerates older rows that store inline LaTeX, then fills standard Greenhouse forms from `answers.json` plus the stored AI response.
+- `handle_jobs.py` reads the jobs package from `stdin`, calls `load_shared_env()` from `src/env_loader.py`, connects over CDP, uploads `green_apply.resume`, falls back to `HANDLE_JOBS_DEFAULT_RESUME_PATH` from repo `.env` when a queued row has no resume path, uploads the stored `green_apply.cover_letter` PDF when present, uses `HANDLE_JOBS_DEFAULT_TRANSCRIPT_PATH` for transcript uploads when needed, and still tolerates older rows that store inline LaTeX, then fills standard Greenhouse forms from `answers.json` plus the stored AI response.
 - `answers.json` can use `{"value": "...", "variants": [...]}` for answers that need multiple select-friendly forms, such as `United States` and `US`.
 - `open_jobs.py` emits the JSON jobs package that `handle_jobs.py` consumes.
 - `utility/reset_green_apply.py` can be used to clear `green_apply` rows for a replay, leaving `job_id` intact and resetting the rest of the row state.

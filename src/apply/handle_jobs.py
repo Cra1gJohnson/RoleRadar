@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -9,6 +10,10 @@ from typing import Any, Optional
 from playwright.sync_api import sync_playwright, TimeoutError, expect
 
 import cover
+from env_loader import load_shared_env
+
+
+load_shared_env()
 
 
 # clean path to parent dir. joined with json file
@@ -54,19 +59,6 @@ STANDARD_ALIAS_OVERRIDES: dict[str, tuple[str, ...]] = {
     "cover_letter_path": ("Cover Letter",),
 }
 
-DEFAULT_RESUME_CANDIDATES = (
-    Path("/home/craig/Documents/AppMaterials/Craig_Johnson_Resume.pdf"),
-    Path("/home/craig/Downloads/Craig_Johnson_Gen_Resume.pdf"),
-    Path("/home/craig/Downloads/Craig_Johnson_PMO_Resume.pdf"),
-)
-
-DEFAULT_COVER_LETTER_CANDIDATES = (
-    Path("/home/craig/Documents/AppMaterials/Craig_Johnson_Cover_Letter_TREX.pdf"),
-    Path("/home/craig/Documents/AppMaterials/Future_Standard_CoverLetter.pdf"),
-    Path("/home/craig/Downloads/Columbia_Cover_Letter.pdf"),
-    Path("/home/craig/Downloads/Intuitive_Cover_Letter.pdf"),
-)
-
 ANSWER_LABEL_ALIASES = (
     "answer label",
     "answer_label",
@@ -105,6 +97,23 @@ class JobsPackage:
     """The full package passed from `open_jobs.py` to `handle_jobs.py`."""
 
     jobs: list[JobsPackageItem]
+
+
+def env_path(name: str) -> Path | None:
+    """Read a filesystem path from the environment when configured."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    if not value:
+        return None
+
+    return Path(value).expanduser()
+
+
+DEFAULT_RESUME_PATH = env_path("HANDLE_JOBS_DEFAULT_RESUME_PATH")
+DEFAULT_TRANSCRIPT_PATH = env_path("HANDLE_JOBS_DEFAULT_TRANSCRIPT_PATH")
 
 def dismiss_cookie_banner(page_or_frame):
       """ Dismiss cookies at the opening of a url """
@@ -421,7 +430,11 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
                 except Exception as e:
                     print("failed secondary resume")
             
-            resume_path = job.resume or "/home/craig/Documents/AppMaterials/Craig_Johnson_Resume.pdf"
+            resume_path = job.resume or (
+                str(DEFAULT_RESUME_PATH) if DEFAULT_RESUME_PATH is not None else None
+            )
+            if resume_path is None:
+                raise ValueError("No resume path configured for handle_jobs.py")
             resume_input.set_input_files(resume_path)
         except Exception as exec:
             print(f"resume boinked \n because {exec}")
@@ -465,7 +478,9 @@ def handle_standard(job: JobsPackageItem, standard: bool) -> None:
                 except Exception as e:
                     print("failed secondary transcript")
             
-            trans_input.set_input_files("/home/craig/Documents/AppMaterials/Testudo - Unofficial Transcript.pdf")
+            if DEFAULT_TRANSCRIPT_PATH is None:
+                raise ValueError("No transcript path configured for handle_jobs.py")
+            trans_input.set_input_files(str(DEFAULT_TRANSCRIPT_PATH))
         except Exception as exec:
             print(f"transcript boinked \n because {exec}")
         
