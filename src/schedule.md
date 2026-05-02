@@ -109,23 +109,31 @@ Tasks:
 ## April 26th
 
 - found bug in app preparation
-
+- implement better cli interface for app approval
 
 ## May 1st
 
 - Collection changes to location flag on green_job table insert
 - Create_ scripts for table creation, moving to ats agnostic schema
-- Dockerfile creation and begining testing
+- Dockerfile creation and begining of testing for server use.
 - repo clean
 
 ## Next things
 
-- candidate_filter needs to do the regex inside of psql because It takes far too long outside.
-- fix bug in score jobs
-- make prepare_apps async. 
-- add in last 10 apps as context 
-- add in url when about to edit text area
-- finally finish latex injection for custom cover letters. 
+- candidate_filter needs to do the regex inside of psql, Because It takes far too long outside.
+- Implement Pre-validation ats_board check in you_search.py
+- discovery.md updates
+- solidify lower board names in db
+- Collection that is ats agnostic
+- dockerize collection
+- dockerize postgres
+
+## ideas towards docker
+
+- one container for collection and network requests
+- one container for postgres
+- one network to share collection and DB
+- one container for app-user
 
 ## Commit Guidelines
 

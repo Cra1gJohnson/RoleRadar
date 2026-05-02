@@ -1,11 +1,13 @@
 # Discovery Directory Guide
 
 ## Purpose
+
 - Define the intent of `src/discovery/`.
 - Standardize how discovery inputs are managed and queried.
 - Provide prompt-ready context for future automation work.
 
 ## Directory Scope
+
 - `discovery_names.txt`: source list of discovery search terms.
 - `discovery.md`: operating notes, assumptions, and future prompt context.
 - `create_ats_board.py`: creates the shared ATS board table and enum.
@@ -13,6 +15,7 @@
 - `you_query.py`: You.com Search API-based discovery runner for ATS board discovery.
 
 ## High-Level Workflow
+
 1. Load discovery terms from `discovery_names.txt`.
 2. Persist terms in PostgreSQL (`keyword`) with query timestamps and ATS board counts.
 3. Run search discovery for Greenhouse and Lever targets.
@@ -21,6 +24,7 @@
 6. Save extracted identifiers into PostgreSQL for downstream API usage.
 
 ## Search Targets
+
 - Greenhouse:
   - `site:boards.greenhouse.io "<term>"`
   - `site:job-boards.greenhouse.io "<term>"`
@@ -28,6 +32,7 @@
   - `site:jobs.lever.co "<term>"`
 
 ## Extraction Rules
+
 - Greenhouse URL patterns:
   - `https://boards.greenhouse.io/{board_token}`
   - `https://job-boards.greenhouse.io/{board_token}`
@@ -35,6 +40,7 @@
   - `https://jobs.lever.co/{site_slug}`
 
 ## Data Entities
+
 - `keyword`
   - Main table storing each discovery term from `discovery_names.txt`.
   - Current columns:
@@ -75,6 +81,7 @@
   - Includes source URL and timestamps.
 
 ## PostgreSQL Configuration (To Be Filled)
+
 - Database:
 - User:
 - Host:
@@ -82,6 +89,7 @@
 - Schema:
 
 ## Table Definitions
+
 - Keyword table:
   - Table name: `keyword`
   - Key columns: `name_id`, `name`, `green_boards`, `ashby_boards`, `lever_boards`, `last_used`, `success`
@@ -99,18 +107,21 @@
   - Key columns:
 
 ## Operational Rules
+
 - Treat discovery terms as case-insensitive for matching.
 - De-duplicate extracted tokens/slugs before insert.
 - Maintain `created_at` and `updated_at` timestamps.
 - Record `last_queried_at` for each discovery term.
 
 ## Prompt Context for Future Work
+
 - Use this directory as the source of truth for discovery scope.
 - Prefer idempotent database writes (`upsert` behavior).
 - Keep extraction logic strict to approved URL patterns.
 - Log query term, query time, and result count for traceability.
 
 ## query_names.py Behavior
+
 - Test mode:
   - Requires a positional range argument (example: `0-200`).
   - Loads all names in that range and updates `last_used = NOW()` for all selected rows before running.
@@ -147,10 +158,8 @@
 - Compatibility note:
   - `--cookie-file` and `--reset-cookies` are retained for CLI compatibility but are currently no-op in subprocess ddgr mode.
 
-
-
-
 ## you_query.py Behavior
+
 - Uses the You.com Search API endpoint `GET https://ydc-index.io/v1/search`.
 - Reads the API key from `.env` variable `API`.
 - Opens one PostgreSQL connection for the run and reads selected rows from `keyword`.
@@ -170,6 +179,7 @@
   - `https://jobs.ashbyhq.com/{board}/...`
   - `https://jobs.lever.co/{board}/...`
 - Sorts extracted board identifiers before validation and persistence.
+- all board names are not case specific and are stored at lower() and always should be used as lower()
 - Validates candidate boards with browser-like headers:
   - Greenhouse: `GET https://boards-api.greenhouse.io/v1/boards/{board}`
   - Ashby: `GET https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=false`

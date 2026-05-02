@@ -11,6 +11,7 @@
 - `greenhouse_board_resp/`: directory of real Greenhouse board GET responses for context and testing.
 - `collection.md`: operating notes, assumptions, and future prompt context.
 - `collection_control.py`: control script for collection scheduling and monitoring.
+- `create_board_snapshot.py`: creates the board snapshot table.
 - `normalization.py`: pure board-response normalization helpers with no database access.
 - `upsert.py`: async comparison and upsert helpers for `green_job`.
 - `delete.py`: async stale-row deletion helpers for `green_job`.
@@ -21,10 +22,10 @@
 1. Read candidate Greenhouse board tokens from PostgreSQL (`board_token`).
 2. Select boards to monitor based on polling cadence and prior collection results.
 3. Fetch `GET https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs`.
-4. Extract and sort the returned `jobs[].id` values, compute the board hash, and compare it with `greenhouse_board_snapshot.board_hash`.
+4. Extract and sort the returned `jobs[].id` values, compute the board hash, and compare it with `board_snapshot.board_hash`.
 5. For unchanged boards, update the snapshot poll metadata and skip full normalization, job upsert, and stale-row deletion.
 6. For changed or first-seen boards, normalize the returned board payload in memory.
-7. Persist or update a board snapshot in PostgreSQL (`greenhouse_board_snapshot`).
+7. Persist or update a board snapshot in PostgreSQL (`board_snapshot`).
 8. Compare all normalized response jobs to the current `green_job` rows for the same token.
 9. Upsert all valid response jobs into PostgreSQL (`green_job`) with a per-job `united_states` location flag.
 10. Delete `green_job` rows for that token that are no longer present in the normalized response.
@@ -50,17 +51,16 @@
 - `board_token`
   - Source table from discovery.
   - Stores unique Greenhouse board tokens used as inputs to collection.
-- `greenhouse_board_snapshot`
+- `board_snapshot`
   - Stores one fetched board snapshot per monitored request.
   - Current columns:
     - `snapshot_id` (primary key)
-    - `token` (foreign key to `board_token.token` and unique constraint)
+    - `board` (unique board identifier; foreign key to `ats_board.board`)
     - `fetched_at` (timestamp of snapshot fetch)
     - `request_status` (HTTP status code or request result)
     - `job_count` (count of jobs returned in the response)
     - `board_hash` (hash derived from sorted job IDs)
     - `company_name` (best available board-level company label)
-    - `status` (`board_priority`; values include `HOT`, `WARM`, `COLD`, `DEAD`)
     - `united_states` (whether the latest normalization pass found at least one U.S. job)
   - Used to track board changes over time and store the latest fetch metadata.
   - Only one snapshot per board right now.
@@ -68,7 +68,7 @@
   - Stores normalized jobs derived from Greenhouse board snapshots.
   - Current columns:
     - `job_id` (primary key)
-    - `snapshot_id` (foreign key to `greenhouse_board_snapshot.snapshot_id`)
+    - `snapshot_id` (foreign key to `board_snapshot.snapshot_id`)
     - `token` (foreign key to `board_token.token`)
     - `greenhouse_job_id` (Greenhouse API job id)
     - `company_name`
@@ -97,8 +97,8 @@
   - Table name: `board_token`
   - Key columns: `token`
 - Board snapshot table:
-  - Table name: `greenhouse_board_snapshot`
-  - Key columns: `snapshot_id`, `token`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`, `status`, `united_states`
+  - Table name: `board_snapshot`
+  - Key columns: `snapshot_id`, `board`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`, `united_states`
 - Greenhouse job table:
   - Table name: `green_job`
   - Key columns: `job_id`, `snapshot_id`, `token`, `greenhouse_job_id`, `company_name`, `title`, `location`, `united_states`, `url`, `first_fetched_at`, `updated_at`, `candidate`, `enriched`
@@ -112,7 +112,7 @@
 - Keep all returned job IDs in the board hash and write all valid normalized jobs into `green_job`.
 - Set `green_job.united_states` for every written job based on its normalized location.
 - Keep request status and fetch time for every board poll attempt.
-- Maintain traceability from normalized jobs back to the source `greenhouse_board_snapshot`.
+- Maintain traceability from normalized jobs back to the source `board_snapshot`.
 - Maintain traceability from normalized jobs back to the originating `board_token`.
 - Preserve downstream progress markers on existing jobs unless a later workflow explicitly resets them.
 - Delete stale `green_job` rows when they are no longer present in the normalized live-board response.
@@ -126,7 +126,7 @@
   - board snapshot fetching and hashing
   - pure job normalization
   - database upsert/delete synchronization
-- Prefer storing board-level evidence in `greenhouse_board_snapshot` and normalized job-level data in `green_job`.
+- Prefer storing board-level evidence in `board_snapshot` and normalized job-level data in `green_job`.
 - Optimize for repeated polling across thousands of boards without unnecessary reprocessing.
 - Keep `green_job` minimal so enrichment-specific data can live in downstream tables.
 
@@ -135,7 +135,7 @@
 - Owns monitoring cadence, polling decisions, and async fetch orchestration.
 - Uses a bounded queue so responses can be normalized and written sequentially.
 - Keeps one PostgreSQL connection open for the duration of the run.
-- Updates `greenhouse_board_snapshot` on every successful or failed fetch attempt.
+- Updates `board_snapshot` on every successful or failed fetch attempt.
 - Short-circuits successful unchanged responses by comparing the freshly computed board hash against the stored snapshot hash before full normalization and job synchronization.
 - Feeds normalized work items into the database writer stage so upsert and delete remain sequential.
 - Prints the final summary and writes the same single line to `logs/collection_summary_YYYYMMDD_HHMMSS_<mode>.log`.
