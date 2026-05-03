@@ -99,6 +99,7 @@
 - ATS board table:
   - Table name: `ats_board`
   - Key columns: `board_id`, `board`, `ats`, `last_used`, `success`
+  - Store `board` values lowercase and enforce uniqueness on `board`.
 - You search table:
   - Table name: `you_search`
   - Key columns: `search_id`, `search`, `results_num`, `last_used`, `success`, `tokens`
@@ -109,6 +110,7 @@
 ## Operational Rules
 
 - Treat discovery terms as case-insensitive for matching.
+- Normalize extracted board identifiers to lowercase before checking or inserting `ats_board` rows.
 - De-duplicate extracted tokens/slugs before insert.
 - Maintain `created_at` and `updated_at` timestamps.
 - Record `last_queried_at` for each discovery term.

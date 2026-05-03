@@ -118,6 +118,15 @@ Tasks:
 - Dockerfile creation and begining of testing for server use.
 - repo clean
 
+## May 2nd
+
+- ensured db uses lower() board names for Green_and Ashby, case-sensitive for lever
+- Added Create snapshot and job tables
+
+## May 3rd
+
+-
+
 ## Next things
 
 - candidate_filter needs to do the regex inside of psql, Because It takes far too long outside.

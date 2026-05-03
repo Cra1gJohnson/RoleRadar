@@ -60,13 +60,13 @@ def ensure_ats_board_table(conn: psycopg.Connection) -> None:
             )
             """
         )
+        # index on board
         cur.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS ats_board_board_lower_idx
-            ON ats_board (LOWER(board))
+            CREATE UNIQUE INDEX IF NOT EXISTS ats_board_board_idx
+            ON ats_board (board)
             """
         )
-
 
 def main() -> None:
     with db_connect() as conn:

@@ -12,6 +12,7 @@
 - `collection.md`: operating notes, assumptions, and future prompt context.
 - `collection_control.py`: control script for collection scheduling and monitoring.
 - `create_board_snapshot.py`: creates the board snapshot table.
+- `create_job.py`: creates the normalized job table.
 - `normalization.py`: pure board-response normalization helpers with no database access.
 - `upsert.py`: async comparison and upsert helpers for `green_job`.
 - `delete.py`: async stale-row deletion helpers for `green_job`.
@@ -26,9 +27,9 @@
 5. For unchanged boards, update the snapshot poll metadata and skip full normalization, job upsert, and stale-row deletion.
 6. For changed or first-seen boards, normalize the returned board payload in memory.
 7. Persist or update a board snapshot in PostgreSQL (`board_snapshot`).
-8. Compare all normalized response jobs to the current `green_job` rows for the same token.
+8. Compare all normalized response jobs to the current `green_job` rows for the same board.
 9. Upsert all valid response jobs into PostgreSQL (`green_job`) with a per-job `united_states` location flag.
-10. Delete `green_job` rows for that token that are no longer present in the normalized response.
+10. Delete `green_job` rows for that board that are no longer present in the normalized response.
 11. Record monitoring state so the next poll cycle can prioritize boards correctly.
 12. Write the final collection summary line to `src/collection/logs/`.
 
@@ -69,8 +70,9 @@
   - Current columns:
     - `job_id` (primary key)
     - `snapshot_id` (foreign key to `board_snapshot.snapshot_id`)
-    - `token` (foreign key to `board_token.token`)
-    - `greenhouse_job_id` (Greenhouse API job id)
+    - `board` (foreign key to `ats_board.board`)
+    - `ats` (`ats_board_ats`; values include `Green`, `Ashby`, `Lever`)
+    - `ats_job_id` (source ATS job id)
     - `company_name`
     - `title`
     - `location`
@@ -80,7 +82,10 @@
     - `candidate` (nullable downstream enrichment candidate flag)
     - `enriched` (downstream enrichment completion flag)
     - `united_states` (best-effort job-level location classification)
-  - Intended to represent normalized job state for downstream use while preserving linkage to the source snapshot and board token.
+    - `description`
+    - `min_compensation`
+    - `max_compensation`
+  - Intended to represent normalized job state for downstream use while preserving linkage to the source snapshot and board.
   - Keep this table thin; job descriptions and other heavier enrichment data should live downstream in enrichment-specific tables.
 
 ## PostgreSQL Configuration (To Be Filled)
@@ -101,7 +106,7 @@
   - Key columns: `snapshot_id`, `board`, `fetched_at`, `request_status`, `job_count`, `board_hash`, `company_name`, `united_states`
 - Greenhouse job table:
   - Table name: `green_job`
-  - Key columns: `job_id`, `snapshot_id`, `token`, `greenhouse_job_id`, `company_name`, `title`, `location`, `united_states`, `url`, `first_fetched_at`, `updated_at`, `candidate`, `enriched`
+  - Key columns: `job_id`, `snapshot_id`, `board`, `ats`, `ats_job_id`, `company_name`, `title`, `location`, `united_states`, `url`, `first_fetched_at`, `updated_at`, `candidate`, `enriched`, `description`, `min_compensation`, `max_compensation`
 
 ## Operational Rules
 
@@ -113,7 +118,7 @@
 - Set `green_job.united_states` for every written job based on its normalized location.
 - Keep request status and fetch time for every board poll attempt.
 - Maintain traceability from normalized jobs back to the source `board_snapshot`.
-- Maintain traceability from normalized jobs back to the originating `board_token`.
+- Maintain traceability from normalized jobs back to the originating `ats_board`.
 - Preserve downstream progress markers on existing jobs unless a later workflow explicitly resets them.
 - Delete stale `green_job` rows when they are no longer present in the normalized live-board response.
 - Keep final summary logs one-line only: the file contains the final summary and no progress output.
@@ -151,7 +156,7 @@
 
 ## upsert.py Behavior
 
-- Compares normalized response jobs against existing `green_job` rows for the same token.
+- Compares normalized response jobs against existing `green_job` rows for the same board.
 - Inserts new jobs and updates jobs present in both the database and the live response.
 - Leaves unchanged rows untouched when the upstream `updated_at` value matches.
 - Updates same-timestamp rows when the stored `united_states` flag differs from the current location classification.
@@ -160,8 +165,8 @@
 
 ## delete.py Behavior
 
-- Loads the current `green_job` rows for a token.
-- Deletes rows whose `greenhouse_job_id` is no longer present in the normalized response.
+- Loads the current `green_job` rows for a board.
+- Deletes rows whose `ats_job_id` is no longer present in the normalized response.
 - Verifies the `green_job` child-table cascade contract before destructive deletes run.
 
 ## Open Questions

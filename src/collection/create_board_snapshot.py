@@ -27,13 +27,6 @@ def db_connect() -> psycopg.Connection:
 def ensure_board_snapshot_table(conn: psycopg.Connection) -> None:
     """Create the board snapshot table used by collection."""
     with conn.cursor() as cur:
-        # Is this really needed?
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS ats_board_board_unique_idx
-            ON ats_board (board)
-            """
-        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS board_snapshot (

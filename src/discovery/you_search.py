@@ -95,6 +95,7 @@ class QueryRunResult:
     skipped: bool = False
     results_num: int = 0
     candidate_boards: int = 0
+    existing_boards: int = 0
     valid_boards: int = 0
     inserted_boards: int = 0
     error: Optional[str] = None
@@ -272,31 +273,18 @@ def upsert_you_search(
         )
 
 
-def board_exists(conn: psycopg.Connection, board: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM ats_board WHERE LOWER(board) = LOWER(%s)",
-            (board,),
-        )
-        return cur.fetchone() is not None
-
-
 def insert_ats_board_if_new(conn: psycopg.Connection, board: str, ats: str) -> bool:
-    if board_exists(conn, board):
-        return False
-
+    
+    #board is lower for Green and ashby, normal for Lever. Conflicts for
+    # per ats or in uniqueness are still caught
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO ats_board (board, ats, last_used, success)
-            SELECT %s, %s, NOW(), TRUE
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM ats_board
-                WHERE LOWER(board) = LOWER(%s)
-            )
+            VALUES (%s, %s, NOW(), TRUE)
+            ON CONFLICT (board) DO NOTHING
             """,
-            (board, ats, board),
+            (board,ats),
         )
         return cur.rowcount == 1
 
@@ -329,14 +317,31 @@ def extract_board_identifier(url: str, ats: str) -> Optional[str]:
     match = re.match(r"^/([^/?#]+)/?", parsed.path)
     if not match:
         return None
-
+    
     board = match.group(1).strip()
-    if ats == "Green":
+    # Green and ashby case-insensitive
+    if ats == 'Green' or ats == 'Ashby':
         board = board.lower()
     if not BOARD_RE.match(board):
         return None
     return board
 
+def check_ats_board(conn: psycopg.Connection, ats : str, boards : Sequence[str]) -> Sequence[str]:
+    if not boards:
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT board
+            FROM ats_board
+            WHERE board = ANY(%s)
+            """,
+            (list(boards),),
+        )
+        existing_boards = {row[0] for row in cur.fetchall()}
+
+    return [board for board in boards if board not in existing_boards]
 
 def build_validate_url(ats: str, board: str) -> str:
     if ats == "Green":
@@ -495,15 +500,22 @@ def process_search(
             f"search results ats={ats} results={len(urls)} "
             f"candidates={len(candidate_boards)} | {search}"
         )
+
+        trim_candidate_boards = check_ats_board(
+            conn,
+            ats,
+            candidate_boards
+        )
+        existing_boards = len(candidate_boards) - len(trim_candidate_boards)
         board_validity = validate_candidate_boards(
             ats,
-            candidate_boards,
+            trim_candidate_boards,
             validation_workers,
         )
 
         valid_boards = 0
         inserted_boards = 0
-        for board in candidate_boards:
+        for board in trim_candidate_boards:
             if not board_validity.get(board, False):
                 continue
 
@@ -516,7 +528,7 @@ def process_search(
             search=search,
             results_num=len(urls),
             success=True,
-            boards=valid_boards,
+            boards=inserted_boards,
         )
         return QueryRunResult(
             query=search,
@@ -524,6 +536,7 @@ def process_search(
             success=True,
             results_num=len(urls),
             candidate_boards=len(candidate_boards),
+            existing_boards=existing_boards,
             valid_boards=valid_boards,
             inserted_boards=inserted_boards,
         )
@@ -540,7 +553,8 @@ def print_query_result(current: int, total: int, result: QueryRunResult) -> None
     if result.success:
         log(
             f"[{current}/{total}] ok | ats={result.ats} results={result.results_num} "
-            f"candidates={result.candidate_boards} valid={result.valid_boards} "
+            f"candidates={result.candidate_boards} existing={result.existing_boards} "
+            f"valid={result.valid_boards} "
             f"inserted={result.inserted_boards} | {result.query}"
         )
         return
