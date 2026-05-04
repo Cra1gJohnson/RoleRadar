@@ -19,9 +19,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
-from delete import delete_missing_jobs, fetch_existing_job_rows, verify_cascade_contract
-from normalization import extract_job_count, extract_sorted_job_ids, normalize_board_payload
-from upsert import upsert_jobs
+from collection.archive.delete import delete_missing_jobs, fetch_existing_job_rows, verify_cascade_contract
+from collection.archive.normalization import extract_job_count, extract_sorted_job_ids, normalize_board_payload
+from collection.archive.upsert import upsert_jobs
 
 load_shared_env()
 

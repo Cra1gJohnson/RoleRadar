@@ -16,8 +16,8 @@ from env_loader import load_shared_env
 
 load_shared_env()
 
-GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
-ASHBY_BOARD_API = "https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=false"
+GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?pay_transparency=true"
+ASHBY_BOARD_API = "https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true"
 LEVER_BOARD_API = "https://api.lever.co/v0/postings/{token}?mode=json"
 API_HEADERS = {
     "User-Agent": (

@@ -56,7 +56,7 @@ def ensure_job_table(conn: psycopg.Connection) -> None:
                 snapshot_id BIGINT,
                 board TEXT,
                 ats {ATS_ENUM_TYPE},
-                ats_job_id BIGINT NOT NULL,
+                ats_job_id TEXT NOT NULL,
                 company_name TEXT,
                 title TEXT,
                 location TEXT,
@@ -73,16 +73,23 @@ def ensure_job_table(conn: psycopg.Connection) -> None:
         )
         cur.execute(
             """
+            ALTER TABLE job
+            ALTER COLUMN ats_job_id TYPE TEXT
+            USING ats_job_id::TEXT
+            """
+        )
+        cur.execute(
+            """
             DO $$
             BEGIN
                 IF NOT EXISTS (
                     SELECT 1
                     FROM pg_constraint
-                    WHERE conname = 'fk_green_job_snapshot'
-                      AND conrelid = 'green_job'::regclass
+                    WHERE conname = 'fk_job_snapshot'
+                      AND conrelid = 'job'::regclass
                 ) THEN
-                    ALTER TABLE green_job
-                    ADD CONSTRAINT fk_green_job_snapshot
+                    ALTER TABLE job
+                    ADD CONSTRAINT fk_job_snapshot
                     FOREIGN KEY (snapshot_id) REFERENCES board_snapshot(snapshot_id);
                 END IF;
             END
@@ -96,15 +103,21 @@ def ensure_job_table(conn: psycopg.Connection) -> None:
                 IF NOT EXISTS (
                     SELECT 1
                     FROM pg_constraint
-                    WHERE conname = 'fk_green_job_board'
-                      AND conrelid = 'green_job'::regclass
+                    WHERE conname = 'fk_job_board'
+                      AND conrelid = 'job'::regclass
                 ) THEN
-                    ALTER TABLE green_job
-                    ADD CONSTRAINT fk_green_job_board
+                    ALTER TABLE job
+                    ADD CONSTRAINT fk_job_board
                     FOREIGN KEY (board) REFERENCES ats_board(board);
                 END IF;
             END
             $$;
+            """
+        )
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS job_board_ats_job_id_idx
+            ON job (board, ats_job_id)
             """
         )
 
@@ -114,7 +127,7 @@ def main() -> None:
         ensure_ats_enum(conn)
         ensure_job_table(conn)
 
-    print("Created green_job table.")
+    print("Created job table.")
 
 
 if __name__ == "__main__":

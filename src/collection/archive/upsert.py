@@ -6,7 +6,7 @@ from typing import Mapping, Optional
 import psycopg
 
 from env_loader import load_shared_env
-from normalization import NormalizedJobRow
+from collection.archive.normalization import NormalizedJobRow
 
 load_shared_env()
 

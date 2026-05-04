@@ -5,7 +5,7 @@ from typing import Mapping, Optional
 import psycopg
 
 from env_loader import load_shared_env
-from upsert import ExistingJobRow
+from collection.archive.upsert import ExistingJobRow
 
 load_shared_env()
 

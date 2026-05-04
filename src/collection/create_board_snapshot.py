@@ -43,6 +43,12 @@ def ensure_board_snapshot_table(conn: psycopg.Connection) -> None:
         )
         cur.execute(
             """
+            CREATE UNIQUE INDEX IF NOT EXISTS board_snapshot_board_idx
+            ON board_snapshot (board)
+            """
+        )
+        cur.execute(
+            """
             DO $$
             BEGIN
                 IF NOT EXISTS (

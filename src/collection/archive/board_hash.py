@@ -15,7 +15,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.append(str(SRC_ROOT))
 
 from env_loader import load_shared_env
-from upsert_jobs import (
+from collection.archive.upsert_jobs import (
     UpsertSummary,
     process_board_payload,
 )
